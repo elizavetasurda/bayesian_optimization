@@ -1,192 +1,285 @@
-"""Модуль байесовской оптимизации с ограничениями."""
-
-import warnings
-from dataclasses import dataclass
-from typing import List, Optional, Callable, Tuple
+"""
+Bayesian Optimization main loop with constraints.
+"""
 
 import numpy as np
-from scipy.optimize import minimize
-from scipy.stats import norm
-from scipy.stats.qmc import LatinHypercube
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, ConstantKernel, WhiteKernel
+from typing import List, Dict, Tuple, Optional, Callable
+from dataclasses import dataclass, field
+import time
 
-warnings.filterwarnings('ignore')
+from .surrogate_model import SurrogateModel
+from .constraint_handling import get_handler
+from .experimental_design import lhs_sample, ensure_feasible
 
 
 @dataclass
 class OptimizationResult:
-    """Результаты оптимизации."""
-    best_x: Optional[np.ndarray]
-    best_value: float
-    history: List[float]
-    first_feasible: Optional[int]
-    n_evaluations: int
+    """Results of a Bayesian optimization run."""
+    best_objective: float
+    best_point: np.ndarray
+    best_constraints: np.ndarray
     is_feasible: bool
-    method: str
+    history: List[Dict]
+    n_evaluations: int
+    wall_time: float
 
 
-class BayesianOptimizer:
-    """Байесовская оптимизация с ограничениями."""
+class BayesianOptimization:
+    """
+    Bayesian Optimization with constraints.
+    
+    Supports multiple constraint handling methods:
+    - CEI: Constrained Expected Improvement
+    - Penalty: Penalty function method
+    - Lagrange: Augmented Lagrangian
+    - Barrier: Interior point barrier
+    """
     
     def __init__(
         self,
-        objective: Callable[[np.ndarray], float],
-        constraints: Callable[[np.ndarray], np.ndarray],
-        bounds: np.ndarray,
-        method: str = 'CEI',
-        n_start: int = 10,
-        penalty_coef: float = 1e4,
-        lagrange_coef: Tuple[float, float] = (1000.0, 500.0),
-        barrier_coef: float = 100.0
+        problem,
+        method: str = "CEI",
+        n_initial: int = 10,
+        n_iterations: int = 50,
+        random_seed: Optional[int] = None,
     ):
-        self.objective = objective
-        self.constraints = constraints
-        self.bounds = bounds
+        """
+        Parameters
+        ----------
+        problem : Problem
+            Optimization problem with objective and constraints.
+        method : str
+            Constraint handling method.
+        n_initial : int
+            Number of initial design points.
+        n_iterations : int
+            Number of BO iterations.
+        random_seed : int, optional
+            Random seed for reproducibility.
+        """
+        self.problem = problem
         self.method = method
-        self.n_start = n_start
-        self.penalty_coef = penalty_coef
-        self.lagrange_coef = lagrange_coef
-        self.barrier_coef = barrier_coef
+        self.n_initial = n_initial
+        self.n_iterations = n_iterations
         
-        self._optimization_func = self._get_optimization_func()
-        self._is_feasible = lambda x: np.all(constraints(x) <= 1e-6)
+        if random_seed is not None:
+            np.random.seed(random_seed)
         
-        self._X: List[np.ndarray] = []
-        self._F: List[float] = []
-        self._G: List[np.ndarray] = []
-        self._best_value: float = 1e9
-        self._best_x: Optional[np.ndarray] = None
-        self._first_feasible: Optional[int] = None
-        self._history: List[float] = []
-        self._gp_f: Optional[GaussianProcessRegressor] = None
-        self._gp_g: List[GaussianProcessRegressor] = []
+        # Initialize surrogate models
+        self.objective_model = SurrogateModel()
+        self.constraint_models = []
+        
+        # Constraint handler
+        self.handler = get_handler(method, problem)
+        
+        # Data storage
+        self.X = None
+        self.f = None
+        self.g = None
+        self.best_feasible_objective = np.inf
+        self.best_feasible_point = None
+        self.best_feasible_constraints = None
+        
+        self.history = []
     
-    def _get_optimization_func(self) -> Callable[[np.ndarray], float]:
-        if self.method == 'Penalty':
-            return lambda x: self.objective(x) + self.penalty_coef * self._how_bad(x)**2
-        elif self.method == 'Lagrange':
-            return lambda x: self._lagrange_func(x)
-        elif self.method == 'Barrier':
-            return lambda x: self._barrier_func(x)
-        return self.objective
+    def _initialize_design(self) -> None:
+        """Generate initial experimental design."""
+        # Latin Hypercube Sampling
+        X_init = lhs_sample(self.n_initial, self.problem.dim, self.problem.bounds)
+        
+        # Evaluate
+        f_init = []
+        g_init = []
+        
+        for x in X_init:
+            f, g = self.problem.evaluate(x)
+            f_init.append(f)
+            g_init.append(g)
+            
+            # Update best feasible
+            if self.problem.is_feasible(x) and f < self.best_feasible_objective:
+                self.best_feasible_objective = f
+                self.best_feasible_point = x.copy()
+                self.best_feasible_constraints = g.copy()
+        
+        self.X = X_init
+        self.f = np.array(f_init)
+        self.g = np.array(g_init)
+        
+        # Fit surrogate models
+        self._fit_models()
     
-    def _how_bad(self, x: np.ndarray) -> float:
-        return np.sum(np.maximum(0, self.constraints(x)))
+    def _fit_models(self) -> None:
+        """Fit Gaussian Process models for objective and constraints."""
+        # Objective model
+        self.objective_model.fit(self.X, self.f)
+        
+        # Constraint models (one per constraint)
+        n_constraints = self.g.shape[1]
+        self.constraint_models = []
+        for j in range(n_constraints):
+            model = SurrogateModel()
+            model.fit(self.X, self.g[:, j])
+            self.constraint_models.append(model)
     
-    def _lagrange_func(self, x: np.ndarray) -> float:
-        g = self.constraints(x)
-        lagrange_val = self.objective(x)
-        c1, c2 = self.lagrange_coef
-        for gi in g:
-            if gi > 0:
-                lagrange_val += c1 * gi + c2 * gi**2
-        return lagrange_val
+    def _acquisition_function(self, X_candidates: np.ndarray) -> np.ndarray:
+        """
+        Compute acquisition function values.
+        
+        Parameters
+        ----------
+        X_candidates : np.ndarray, shape (n_candidates, dim)
+            Candidate points.
+            
+        Returns
+        -------
+        acq : np.ndarray, shape (n_candidates,)
+            Acquisition values.
+        """
+        # Predict objective
+        mean_f, var_f = self.objective_model.predict(X_candidates)
+        
+        # Predict constraints
+        mean_g = np.zeros((len(X_candidates), len(self.constraint_models)))
+        var_g = np.zeros_like(mean_g)
+        
+        for j, model in enumerate(self.constraint_models):
+            m, v = model.predict(X_candidates)
+            mean_g[:, j] = m
+            var_g[:, j] = v
+        
+        # Compute acquisition using handler
+        f_best = self.best_feasible_objective if self.best_feasible_point is not None else np.inf
+        acq = self.handler.compute_acquisition(
+            mean_f, var_f, mean_g, var_g, f_best
+        )
+        
+        return acq
     
-    def _barrier_func(self, x: np.ndarray) -> float:
-        if not self._is_feasible(x):
-            return 1e10
-        g = self.constraints(x)
-        barrier_val = self.objective(x)
-        for gi in g:
-            barrier_val -= self.barrier_coef * np.log(-gi + 1e-8)
-        return barrier_val
-    
-    def _lhs_sample(self, n: int) -> np.ndarray:
-        sampler = LatinHypercube(d=self.bounds.shape[0])
-        s = sampler.random(n=n)
-        X = np.zeros((n, self.bounds.shape[0]))
-        for i in range(self.bounds.shape[0]):
-            X[:, i] = s[:, i] * (self.bounds[i, 1] - self.bounds[i, 0]) + self.bounds[i, 0]
-        return X
-    
-    def _init_data(self) -> None:
-        X0 = self._lhs_sample(self.n_start)
-        for x in X0:
-            self._X.append(x)
-            self._F.append(self._optimization_func(x))
-            self._G.append(self.constraints(x))
-            if self._is_feasible(x) and self.objective(x) < self._best_value:
-                self._best_value = self.objective(x)
-                self._best_x = x.copy()
-                if self._first_feasible is None:
-                    self._first_feasible = len(self._X) - 1
-        self._X = np.array(self._X)
-        self._F = np.array(self._F)
-        self._G = np.array(self._G)
-        self._history.append(self._best_value if self._best_value < 1e9 else np.nan)
-    
-    def _train_gps(self) -> None:
-        kernel = ConstantKernel(1.0) * Matern(length_scale=0.1, nu=2.5) + WhiteKernel(1e-6)
-        self._gp_f = GaussianProcessRegressor(kernel=kernel, alpha=1e-6, normalize_y=True, random_state=42)
-        self._gp_f.fit(self._X.reshape(-1, self.bounds.shape[0]), self._F)
-        if self.method == 'CEI':
-            self._gp_g = []
-            n_constraints = self._G.shape[1] if len(self._G.shape) > 1 else 1
-            for i in range(n_constraints):
-                gp = GaussianProcessRegressor(kernel=kernel, alpha=1e-6, normalize_y=True, random_state=42)
-                g_vals = self._G[:, i] if n_constraints > 1 else self._G
-                gp.fit(self._X.reshape(-1, self.bounds.shape[0]), g_vals)
-                self._gp_g.append(gp)
-    
-    def _ei(self, x: np.ndarray, best_val: float) -> float:
-        x = x.reshape(1, -1)
-        mu, sigma = self._gp_f.predict(x, return_std=True)
-        sigma = sigma[0]
-        if sigma < 1e-10:
-            return 0.0
-        gamma = (best_val - mu) / sigma
-        return sigma * (gamma * norm.cdf(gamma) + norm.pdf(gamma))
-    
-    def _p_feasible(self, x: np.ndarray) -> float:
-        x = x.reshape(1, -1)
-        prob = 1.0
-        for gp in self._gp_g:
-            mu, sigma = gp.predict(x, return_std=True)
-            prob *= norm.cdf(-mu / (sigma[0] + 1e-8))
-        return prob
-    
-    def _cei(self, x: np.ndarray, best_val: float) -> float:
-        return self._ei(x, best_val) * self._p_feasible(x)
-    
-    def _next_point(self, n_tries: int = 30) -> np.ndarray:
+    def _optimize_acquisition(self) -> np.ndarray:
+        """
+        Find point that maximizes acquisition function.
+        
+        Returns
+        -------
+        np.ndarray
+            Next candidate point.
+        """
+        from scipy.optimize import minimize
+        
         best_x = None
-        best_val = -1e9
-        current_best = self._best_value if self._best_value < 1e9 else 1e9
-        for _ in range(n_tries):
-            x0 = np.array([np.random.uniform(*self.bounds[i]) for i in range(self.bounds.shape[0])])
-            try:
-                if self.method == 'CEI':
-                    res = minimize(lambda x: -self._cei(x, current_best), x0, method='L-BFGS-B', bounds=self.bounds, options={'maxiter': 100})
-                else:
-                    res = minimize(self._optimization_func, x0, method='L-BFGS-B', bounds=self.bounds, options={'maxiter': 100})
-                if res.success and -res.fun > best_val:
-                    best_val = -res.fun
+        best_acq = -np.inf
+        
+        # Multi-start optimization
+        n_starts = 20
+        candidates = lhs_sample(n_starts, self.problem.dim, self.problem.bounds)
+        
+        for x0 in candidates:
+            # Local optimization
+            res = minimize(
+                lambda x: -self._acquisition_function(x.reshape(1, -1))[0],
+                x0,
+                bounds=self.problem.bounds,
+                method='L-BFGS-B',
+                options={'maxiter': 100}
+            )
+            
+            if res.success:
+                acq_val = -res.fun
+                if acq_val > best_acq:
+                    best_acq = acq_val
                     best_x = res.x
-            except (ValueError, RuntimeError):
-                continue
-        return best_x if best_x is not None else self._lhs_sample(1)[0]
+        
+        if best_x is None:
+            # Fallback to random
+            best_x = candidates[np.argmax(self._acquisition_function(candidates))]
+        
+        return best_x
     
-    def optimize(self, n_iter: int = 50) -> OptimizationResult:
-        self._init_data()
-        for _ in range(n_iter):
-            self._train_gps()
-            x_new = self._next_point()
-            self._X = np.vstack([self._X, x_new])
-            self._F = np.append(self._F, self._optimization_func(x_new))
-            self._G = np.vstack([self._G, self.constraints(x_new)])
-            if self._is_feasible(x_new) and self.objective(x_new) < self._best_value:
-                self._best_value = self.objective(x_new)
-                self._best_x = x_new.copy()
-                if self._first_feasible is None:
-                    self._first_feasible = len(self._X) - 1
-            self._history.append(self._best_value if self._best_value < 1e9 else np.nan)
+    def optimize(self, verbose: bool = True) -> OptimizationResult:
+        """
+        Run Bayesian optimization.
+        
+        Parameters
+        ----------
+        verbose : bool
+            Print progress.
+            
+        Returns
+        -------
+        OptimizationResult
+            Results of the optimization.
+        """
+        start_time = time.time()
+        
+        # Initial design
+        if verbose:
+            print(f"\n[BO] Method: {self.method}")
+            print(f"[BO] Initial design ({self.n_initial} points)...")
+        self._initialize_design()
+        
+        # Main loop
+        for iteration in range(self.n_iterations):
+            if verbose:
+                print(f"[BO] Iteration {iteration+1}/{self.n_iterations}...", end=" ")
+            
+            # Find next point
+            x_next = self._optimize_acquisition()
+            
+            # Evaluate
+            f_next, g_next = self.problem.evaluate(x_next)
+            
+            # Update data
+            self.X = np.vstack([self.X, x_next])
+            self.f = np.hstack([self.f, f_next])
+            self.g = np.vstack([self.g, g_next])
+            
+            # Update best feasible
+            if self.problem.is_feasible(x_next) and f_next < self.best_feasible_objective:
+                self.best_feasible_objective = f_next
+                self.best_feasible_point = x_next.copy()
+                self.best_feasible_constraints = g_next.copy()
+                if verbose:
+                    print(f"✓ New best: {f_next:.6f}", end=" ")
+            
+            # Update surrogate models
+            self._fit_models()
+            
+            # Update handler parameters (if adaptive)
+            if hasattr(self.handler, 'update_multipliers'):
+                self.handler.update_multipliers(g_next)
+            if hasattr(self.handler, 'update_penalty'):
+                violations = np.maximum(0, g_next)
+                self.handler.update_penalty(violations)
+            
+            # Record history
+            self.history.append({
+                'iteration': iteration,
+                'x': x_next.copy(),
+                'f': f_next,
+                'g': g_next.copy(),
+                'best_f': self.best_feasible_objective,
+                'is_feasible': self.problem.is_feasible(x_next),
+            })
+            
+            if verbose:
+                print(f"f={f_next:.4f}, feasible={self.problem.is_feasible(x_next)}")
+        
+        wall_time = time.time() - start_time
+        
+        if verbose:
+            print(f"\n[BO] Completed in {wall_time:.2f}s")
+            if self.best_feasible_point is not None:
+                print(f"[BO] Best feasible objective: {self.best_feasible_objective:.6f}")
+            else:
+                print(f"[BO] No feasible point found!")
+        
         return OptimizationResult(
-            best_x=self._best_x,
-            best_value=self._best_value,
-            history=self._history,
-            first_feasible=self._first_feasible,
-            n_evaluations=len(self._X),
-            is_feasible=self._is_feasible(self._best_x) if self._best_x is not None else False,
-            method=self.method
+            best_objective=self.best_feasible_objective,
+            best_point=self.best_feasible_point if self.best_feasible_point is not None else self.X[0],
+            best_constraints=self.best_feasible_constraints,
+            is_feasible=self.best_feasible_point is not None,
+            history=self.history,
+            n_evaluations=len(self.f),
+            wall_time=wall_time,
         )

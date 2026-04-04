@@ -1,214 +1,195 @@
-"""Модуль для проведения экспериментов."""
+"""
+Experiment runner for comparing constraint handling methods.
+"""
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
 import numpy as np
-from .optimizer import BayesianOptimizer, OptimizationResult
+from typing import List, Dict, Optional
+from pathlib import Path
+import json
 
-
-@dataclass
-class ExperimentResult:
-    """Результаты эксперимента."""
-    method_name: str
-    problem_name: str
-    runs: List[OptimizationResult] = field(default_factory=list)
-    
-    def get_success_rate(self) -> float:
-        """Доля успешных запусков."""
-        successful = sum(1 for r in self.runs if r.is_feasible)
-        return successful / len(self.runs) if self.runs else 0.0
-    
-    def get_mean_best_value(self) -> float:
-        """Среднее лучшее значение."""
-        values = [r.best_value for r in self.runs if r.is_feasible]
-        return np.mean(values) if values else np.nan
-    
-    def get_median_best_value(self) -> float:
-        """Медиана лучших значений."""
-        values = [r.best_value for r in self.runs if r.is_feasible]
-        return np.median(values) if values else np.nan
-    
-    def get_std_best_value(self) -> float:
-        """Стандартное отклонение."""
-        values = [r.best_value for r in self.runs if r.is_feasible]
-        return np.std(values) if values else np.nan
-    
-    def get_best_value(self) -> float:
-        """Лучшее значение."""
-        values = [r.best_value for r in self.runs if r.is_feasible]
-        return np.min(values) if values else np.nan
-    
-    def get_worst_value(self) -> float:
-        """Худшее значение."""
-        values = [r.best_value for r in self.runs if r.is_feasible]
-        return np.max(values) if values else np.nan
-    
-    def get_mean_first_feasible(self) -> float:
-        """Средняя итерация первого допустимого."""
-        firsts = [r.first_feasible for r in self.runs if r.first_feasible is not None]
-        return np.mean(firsts) if firsts else np.nan
-    
-    def get_quartiles(self) -> Dict[str, float]:
-        """Квартили распределения."""
-        values = [r.best_value for r in self.runs if r.is_feasible]
-        if values:
-            return {
-                'q1': np.percentile(values, 25),
-                'q2': np.percentile(values, 50),
-                'q3': np.percentile(values, 75)
-            }
-        return {'q1': np.nan, 'q2': np.nan, 'q3': np.nan}
-
-
-def run_experiment(
-    problem: Dict[str, Any],
-    method: str,
-    n_runs: int = 10,
-    n_iter: int = 50
-) -> ExperimentResult:
-    """Запуск эксперимента."""
-    result = ExperimentResult(
-        method_name=method,
-        problem_name=problem.get('name', 'unknown')
-    )
-    
-    for seed in range(n_runs):
-        np.random.seed(42 + seed)
-        
-        # Подбираем коэффициенты для разных методов
-        if method == 'CEI':
-            optimizer = BayesianOptimizer(
-                objective=problem['objective'],
-                constraints=problem['constraints'],
-                bounds=problem['bounds'],
-                method=method,
-                n_start=10
-            )
-        elif method == 'Penalty':
-            optimizer = BayesianOptimizer(
-                objective=problem['objective'],
-                constraints=problem['constraints'],
-                bounds=problem['bounds'],
-                method=method,
-                n_start=10,
-                penalty_coef=1e5  # Увеличили штраф
-            )
-        elif method == 'Lagrange':
-            optimizer = BayesianOptimizer(
-                objective=problem['objective'],
-                constraints=problem['constraints'],
-                bounds=problem['bounds'],
-                method=method,
-                n_start=10,
-                lagrange_coef=(2000.0, 1000.0)  # Увеличили коэффициенты
-            )
-        else:  # Barrier
-            optimizer = BayesianOptimizer(
-                objective=problem['objective'],
-                constraints=problem['constraints'],
-                bounds=problem['bounds'],
-                method=method,
-                n_start=10,
-                barrier_coef=200.0  # Увеличили барьер
-            )
-        
-        opt_result = optimizer.optimize(n_iter=n_iter)
-        result.runs.append(opt_result)
-    
-    return result
+from .problems import Sphere, Rosenbrock, Ackley, make_constrained_problem
+from .optimizer import BayesianOptimization
 
 
 def run_experiments(
-    problems: Dict[str, Dict[str, Any]],
-    methods: Optional[List[str]] = None,
-    n_runs: int = 10,
-    n_iter: int = 50
-) -> Dict[str, Dict[str, ExperimentResult]]:
-    """Запуск всех экспериментов."""
+    dimension: int = 2,
+    n_trials: int = 3,
+    n_initial: int = 10,
+    n_iterations: int = 50,
+    methods: List[str] = None,
+    use_coco: bool = True,
+) -> Dict:
+    """
+    Run experiments comparing constraint handling methods.
+    
+    Parameters
+    ----------
+    dimension : int
+        Problem dimension.
+    n_trials : int
+        Number of independent trials per problem/method.
+    n_initial : int
+        Initial design size.
+    n_iterations : int
+        Number of BO iterations.
+    methods : list
+        Constraint handling methods to compare.
+    use_coco : bool
+        Whether to use COCO bbob-constrained problems.
+        
+    Returns
+    -------
+    dict
+        Results dictionary.
+    """
     if methods is None:
-        methods = ['CEI', 'Penalty', 'Lagrange', 'Barrier']
+        methods = ["CEI", "Penalty", "Lagrange", "Barrier"]
     
-    all_results = {}
+    # Define test problems
+    problems = []
+    problem_names = []
     
-    print("\n" + "=" * 80)
-    print("ЗАПУСК ЭКСПЕРИМЕНТОВ")
-    print("=" * 80)
+    # Built-in problems
+    problems.append(Sphere(dim=dimension))
+    problem_names.append("Sphere")
     
-    for prob_name, problem in problems.items():
-        problem['name'] = problem.get('name', prob_name)
+    problems.append(Rosenbrock(dim=dimension))
+    problem_names.append("Rosenbrock")
+    
+    problems.append(Ackley(dim=dimension))
+    problem_names.append("Ackley")
+    
+    # Try to add COCO problems
+    if use_coco:
+        try:
+            from .bbob_wrapper import BBOBSuite
+            coco_suite = BBOBSuite(dimension=dimension, instances=[1])
+            
+            # Add first 3 COCO problems for time reasons
+            for i, prob_desc in enumerate(coco_suite.problems[:3]):
+                # Create wrapper
+                class COCOProblemWrapper:
+                    def __init__(self, suite, prob_desc):
+                        self.suite = suite
+                        self.prob_desc = prob_desc
+                        self.dim = prob_desc.dimension
+                        self.bounds = prob_desc.bounds
+                        self.has_constraints = True
+                    
+                    def objective(self, x):
+                        f, _ = self.suite.evaluate(self.prob_desc, x)
+                        return f
+                    
+                    def constraints(self, x):
+                        _, g = self.suite.evaluate(self.prob_desc, x)
+                        return g
+                    
+                    def evaluate(self, x):
+                        return self.suite.evaluate(self.prob_desc, x)
+                    
+                    def is_feasible(self, x, tol=1e-8):
+                        g = self.constraints(x)
+                        return np.all(g <= tol)
+                
+                wrapped = COCOProblemWrapper(coco_suite, prob_desc)
+                problems.append(wrapped)
+                problem_names.append(prob_desc.function_name)
+        except Exception as e:
+            print(f"Warning: Could not load COCO problems: {e}")
+            print("Using only built-in problems.")
+    
+    results = {
+        "config": {
+            "dimension": dimension,
+            "n_trials": n_trials,
+            "n_initial": n_initial,
+            "n_iterations": n_iterations,
+            "methods": methods,
+        },
+        "problems": {},
+    }
+    
+    for prob, prob_name in zip(problems, problem_names):
         print(f"\n{'='*60}")
-        print(f"Задача: {problem['name']}")
+        print(f"Problem: {prob_name}")
         print(f"{'='*60}")
         
-        all_results[prob_name] = {}
+        prob_results = {}
         
         for method in methods:
-            print(f"\n  Метод: {method}")
-            result = run_experiment(problem, method, n_runs, n_iter)
-            all_results[prob_name][method] = result
+            print(f"\n--- Method: {method} ---")
             
-            success_rate = result.get_success_rate() * 100
-            mean_val = result.get_mean_best_value()
-            best_val = result.get_best_value()
-            
-            print(f"    Успешность: {success_rate:.0f}%")
-            if not np.isnan(mean_val):
-                print(f"    Среднее: {mean_val:.2f}")
-                print(f"    Лучшее: {best_val:.2f}")
-                if prob_name == 'pressure_vessel':
-                    print(f"    Отклонение от теории: {(mean_val - 2414)/2414*100:+.1f}%")
-    
-    return all_results
-
-
-def save_results(
-    results: Dict[str, Dict[str, ExperimentResult]],
-    filename: str = 'results.txt'
-) -> None:
-    """Сохранение результатов."""
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write("РЕЗУЛЬТАТЫ ЭКСПЕРИМЕНТОВ\n")
-        f.write("=" * 80 + "\n\n")
-        
-        for prob_name, methods_results in results.items():
-            prob_display = list(methods_results.values())[0].problem_name
-            f.write(f"Задача: {prob_display}\n")
-            f.write("-" * 40 + "\n")
-            
-            # Таблица результатов
-            f.write("\n{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n".format(
-                "Метод", "Успех%", "Среднее", "Медиана", "Лучшее", "Худшее"
-            ))
-            f.write("-" * 70 + "\n")
-            
-            for method, exp_result in methods_results.items():
-                success = exp_result.get_success_rate() * 100
-                mean_val = exp_result.get_mean_best_value()
-                median_val = exp_result.get_median_best_value()
-                best_val = exp_result.get_best_value()
-                worst_val = exp_result.get_worst_value()
+            trial_results = []
+            for trial in range(n_trials):
+                print(f"  Trial {trial+1}/{n_trials}...", end=" ")
                 
-                if not np.isnan(mean_val):
-                    f.write("{:<12} {:>9.0f}% {:>10.2f} {:>10.2f} {:>10.2f} {:>10.2f}\n".format(
-                        method, success, mean_val, median_val, best_val, worst_val
-                    ))
-                else:
-                    f.write("{:<12} {:>9.0f}% {:>10} {:>10} {:>10} {:>10}\n".format(
-                        method, success, "-", "-", "-", "-"
-                    ))
+                # Run optimization
+                optimizer = BayesianOptimization(
+                    problem=prob,
+                    method=method,
+                    n_initial=n_initial,
+                    n_iterations=n_iterations,
+                    random_seed=42 + trial,
+                )
+                
+                result = optimizer.optimize(verbose=False)
+                trial_results.append(result)
+                
+                print(f"best={result.best_objective:.4f}, feasible={result.is_feasible}")
             
-            # Дополнительная статистика для сосуда
-            if prob_name == 'pressure_vessel':
-                f.write("\nОтклонение от теории (2414 кг):\n")
-                for method, exp_result in methods_results.items():
-                    mean_val = exp_result.get_mean_best_value()
-                    if not np.isnan(mean_val):
-                        dev = (mean_val - 2414) / 2414 * 100
-                        f.write(f"  {method}: {dev:+.1f}%\n")
+            # Aggregate results
+            best_values = [r.best_objective for r in trial_results if r.is_feasible]
+            if best_values:
+                mean_best = np.mean(best_values)
+                std_best = np.std(best_values)
+                success_rate = len(best_values) / n_trials
+            else:
+                mean_best = np.inf
+                std_best = 0
+                success_rate = 0
             
-            f.write("\n")
+            prob_results[method] = {
+                "mean_best": mean_best,
+                "std_best": std_best,
+                "success_rate": success_rate,
+                "trials": [
+                    {
+                        "best": r.best_objective,
+                        "feasible": r.is_feasible,
+                        "n_evals": r.n_evaluations,
+                        "time": r.wall_time,
+                    }
+                    for r in trial_results
+                ],
+                "history": [
+                    [h["best_f"] for h in r.history] for r in trial_results
+                ],
+            }
+            
+            print(f"  Mean best: {mean_best:.4f} ± {std_best:.4f}, Success: {success_rate:.0%}")
         
-        f.write("=" * 80 + "\n")
+        results["problems"][prob_name] = prob_results
     
-    print(f"\nРезультаты сохранены в файл: {filename}")
+    # Save results to file
+    output_file = Path("results.txt")
+    with open(output_file, "w") as f:
+        f.write("Bayesian Optimization with Constraints - Results\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"Dimension: {dimension}\n")
+        f.write(f"Trials per problem: {n_trials}\n")
+        f.write(f"Initial points: {n_initial}\n")
+        f.write(f"BO iterations: {n_iterations}\n\n")
+        
+        for prob_name, prob_res in results["problems"].items():
+            f.write(f"\n{prob_name}\n")
+            f.write("-" * 40 + "\n")
+            for method, res in prob_res.items():
+                f.write(f"  {method}:\n")
+                f.write(f"    Mean best: {res['mean_best']:.6f}\n")
+                f.write(f"    Std: {res['std_best']:.6f}\n")
+                f.write(f"    Success rate: {res['success_rate']:.0%}\n")
+            f.write("\n")
+    
+    print(f"\n✓ Results saved to {output_file}")
+    
+    return results

@@ -1,206 +1,214 @@
-"""Главный модуль для запуска экспериментов."""
-
-import sys
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import Dict, List
 import time
-from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
-# Добавляем путь для импорта наших модулей
-sys.path.insert(0, str(Path(__file__).parent))
+from src.bayesian_optimization.cei import CEIBayesianOptimization
+from src.bayesian_optimization.penalty import PenaltyBayesianOptimization
+from src.bayesian_optimization.lagrange import LagrangeBayesianOptimization
+from src.bayesian_optimization.barrier import BarrierBayesianOptimization
+from src.test_problems.bbob_constrained import create_test_problems
 
-from src.problems import get_problems, get_theoretical_optimum
-from src.experiment import run_experiments, save_results
+def run_optimization(problem: Dict, method: str, n_init: int = 8, n_iter: int = 20) -> Dict:
+    """Запуск оптимизации заданным методом."""
+    objective = problem['objective']
+    constraint = problem['constraint']
+    bounds = problem['bounds']
+    random_state = 42
+    
+    if method == 'CEI':
+        optimizer = CEIBayesianOptimization(objective, constraint, bounds, n_init, n_iter, random_state)
+    elif method == 'Penalty':
+        optimizer = PenaltyBayesianOptimization(objective, constraint, bounds, n_init, n_iter, random_state)
+    elif method == 'Lagrange':
+        optimizer = LagrangeBayesianOptimization(objective, constraint, bounds, n_init, n_iter, random_state)
+    elif method == 'Barrier':
+        optimizer = BarrierBayesianOptimization(objective, constraint, bounds, n_init, n_iter, random_state)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    start_time = time.time()
+    result = optimizer.optimize()
+    elapsed_time = time.time() - start_time
+    
+    return {
+        'method': method,
+        'problem': problem['name'],
+        'best_f': result['best_solution']['f'],
+        'best_g': result['best_solution']['g'],
+        'best_x': result['best_solution']['x'],
+        'time': elapsed_time,
+        'n_evaluations': result['n_evaluations'],
+        'history': result['history']
+    }
 
+def plot_convergence(results: List[Dict], problem_name: str) -> None:
+    """Построение графиков сходимости для всех методов."""
+    plt.figure(figsize=(10, 6))
+    
+    colors = {'CEI': 'blue', 'Penalty': 'green', 'Lagrange': 'orange', 'Barrier': 'red'}
+    
+    for result in results:
+        if result['problem'] != problem_name:
+            continue
+        
+        method = result['method']
+        history_best = result['history']['best_y']
+        
+        # Отфильтровываем inf значения
+        history_clean = []
+        for h in history_best:
+            if np.isfinite(h):
+                history_clean.append(h)
+            elif history_clean:
+                history_clean.append(history_clean[-1])
+            else:
+                history_clean.append(1e6)
+        
+        plt.plot(
+            range(len(history_clean)), 
+            history_clean, 
+            label=f"{method} (final: {result['best_f']:.4f})",
+            color=colors.get(method, 'black'),
+            linewidth=2,
+            marker='o',
+            markersize=3
+        )
+    
+    plt.xlabel('Iteration', fontsize=12)
+    plt.ylabel('Best feasible objective value', fontsize=12)
+    plt.title(f'Convergence on {problem_name}', fontsize=14)
+    plt.legend(loc='best')
+    plt.grid(True, alpha=0.3)
+    plt.yscale('log')
+    plt.tight_layout()
+    
+    # Сохраняем график
+    filename = f'graph_convergence_{problem_name}.png'
+    plt.savefig(filename, dpi=150)
+    print(f"  ✓ Saved convergence plot: {filename}")
+    plt.close()
 
-def create_plots(results, m_opt):
-    """Создает графики для всех задач."""
-    try:
-        import matplotlib.pyplot as plt
-        import numpy as np
+def plot_comparison(all_results: List[Dict]) -> None:
+    """Построение сравнительной диаграммы результатов."""
+    methods = ['CEI', 'Penalty', 'Lagrange', 'Barrier']
+    problems = list(set([r['problem'] for r in all_results]))
+    
+    n_problems = len(problems)
+    fig, axes = plt.subplots(n_problems, 1, figsize=(12, 5 * n_problems))
+    
+    if n_problems == 1:
+        axes = [axes]
+    
+    for idx, problem in enumerate(problems):
+        ax = axes[idx]
         
-        # Список методов
-        methods = ['CEI', 'Penalty', 'Lagrange', 'Barrier']
-        
-        # =========================================================
-        # ГРАФИК 1: СХОДИМОСТЬ (для всех задач в одном окне)
-        # =========================================================
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-        fig.suptitle('Сходимость методов оптимизации', fontsize=14, fontweight='bold')
-        
-        # Задача 1: Сферическая функция
-        ax = axes[0]
-        for method in methods:
-            if method in results['sphere']:
-                exp = results['sphere'][method]
-                # Собираем историю сходимости по всем запускам
-                histories = [r.history for r in exp.runs if r.is_feasible and r.history]
-                if histories:
-                    # Выравниваем длину и усредняем
-                    max_len = max(len(h) for h in histories)
-                    padded = [h + [h[-1]]*(max_len - len(h)) for h in histories]
-                    mean_hist = np.mean(padded, axis=0)
-                    ax.plot(mean_hist[:51], label=method, linewidth=2)
-        ax.set_xlabel('Итерация')
-        ax.set_ylabel('Значение функции')
-        ax.set_title('Сферическая функция (оптимум = 0)')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.set_yscale('log')
-        
-        # Задача 2: Функция Розенброка
-        ax = axes[1]
-        for method in methods:
-            if method in results['rosenbrock']:
-                exp = results['rosenbrock'][method]
-                histories = [r.history for r in exp.runs if r.is_feasible and r.history]
-                if histories:
-                    max_len = max(len(h) for h in histories)
-                    padded = [h + [h[-1]]*(max_len - len(h)) for h in histories]
-                    mean_hist = np.mean(padded, axis=0)
-                    ax.plot(mean_hist[:51], label=method, linewidth=2)
-        ax.set_xlabel('Итерация')
-        ax.set_ylabel('Значение функции')
-        ax.set_title('Функция Розенброка (оптимум = 0)')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.set_yscale('log')
-        
-        # Задача 3: Сосуд под давлением
-        ax = axes[2]
-        for method in methods:
-            if method in results['pressure_vessel']:
-                exp = results['pressure_vessel'][method]
-                histories = [r.history for r in exp.runs if r.is_feasible and r.history]
-                if histories:
-                    max_len = max(len(h) for h in histories)
-                    padded = [h + [h[-1]]*(max_len - len(h)) for h in histories]
-                    mean_hist = np.mean(padded, axis=0)
-                    ax.plot(mean_hist[:51], label=method, linewidth=2)
-        ax.axhline(m_opt, color='k', linestyle='--', label='Теория')
-        ax.set_xlabel('Итерация')
-        ax.set_ylabel('Масса, кг')
-        ax.set_title('Сосуд под давлением')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.set_yscale('log')
-        
-        plt.tight_layout()
-        plt.savefig('graph_convergence.png', dpi=150, bbox_inches='tight')
-        plt.close()
-        print("  График 1 (сходимость) сохранен: graph_convergence.png")
-        
-        # =========================================================
-        # ГРАФИК 2: СРАВНЕНИЕ МЕТОДОВ (только для сосуда под давлением)
-        # =========================================================
-        fig, ax = plt.subplots(figsize=(10, 6))
-        fig.suptitle('Сравнение методов для задачи о сосуде под давлением', fontsize=14, fontweight='bold')
-        
-        # Данные для графика
         method_names = []
-        mean_values = []
-        std_values = []
         best_values = []
         
         for method in methods:
-            if method in results['pressure_vessel']:
-                exp = results['pressure_vessel'][method]
-                mean_val = exp.get_mean_best_value()
-                std_val = exp.get_std_best_value()
-                best_val = exp.get_best_value()
-                success_rate = exp.get_success_rate() * 100
-                
-                if not np.isnan(mean_val):
-                    method_names.append(f"{method}\n({success_rate:.0f}%)")
-                    mean_values.append(mean_val)
-                    std_values.append(std_val)
-                    best_values.append(best_val)
+            results_method = [r for r in all_results if r['problem'] == problem and r['method'] == method]
+            if results_method:
+                method_names.append(method)
+                best_values.append(results_method[0]['best_f'])
         
-        # Столбцы для средних значений
-        x = np.arange(len(method_names))
-        width = 0.35
+        # Создаем столбцы с разными цветами
+        bar_colors = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728'][:len(method_names)]
+        bars = ax.bar(method_names, best_values, color=bar_colors, alpha=0.7)
         
-        bars1 = ax.bar(x - width/2, mean_values, width, yerr=std_values, 
-                       capsize=5, label='Средняя масса', color='skyblue')
-        bars2 = ax.bar(x + width/2, best_values, width, 
-                       label='Лучшая масса', color='darkorange')
-        
-        # Линия теоретического оптимума
-        ax.axhline(m_opt, color='r', linestyle='--', linewidth=2, label=f'Теория: {m_opt:.0f} кг')
-        
-        ax.set_xlabel('Метод (успешность)')
-        ax.set_ylabel('Масса, кг')
-        ax.set_title('Сравнение методов')
-        ax.set_xticks(x)
-        ax.set_xticklabels(method_names)
-        ax.legend()
+        ax.set_ylabel('Best f(x)', fontsize=11)
+        ax.set_title(f'Problem: {problem}', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3, axis='y')
         
-        # Подписи значений на столбцах
-        for bar, val in zip(bars1, mean_values):
-            ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 10,
-                   f'{val:.0f}', ha='center', va='bottom', fontsize=9)
-        
-        for bar, val in zip(bars2, best_values):
-            ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 10,
-                   f'{val:.0f}', ha='center', va='bottom', fontsize=9)
-        
-        plt.tight_layout()
-        plt.savefig('graph_comparison.png', dpi=150, bbox_inches='tight')
-        plt.close()
-        print("  График 2 (сравнение методов) сохранен: graph_comparison.png")
-        
-    except Exception as e:
-        print(f"\nНе получилось создать графики: {e}")
-
+        # Добавляем значения на столбцы
+        for bar, val in zip(bars, best_values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig('graph_comparison.png', dpi=150)
+    print("\n✓ Saved comparison plot: graph_comparison.png")
+    plt.close()
 
 def main():
-    """Запускает эксперименты и сохраняет результаты."""
-    print("\n" + "=" * 80)
-    print(" " * 25 + "БАЙЕСОВСКАЯ ОПТИМИЗАЦИЯ С ОГРАНИЧЕНИЯМИ")
-    print("=" * 80)
+    print("=" * 60)
+    print("Bayesian Optimization with Constraints - Benchmark")
+    print("=" * 60)
     
-    # Теоретический оптимум для задачи о сосуде
-    R_opt, m_opt = get_theoretical_optimum()
-    print("\nТеоретический оптимум для задачи о сосуде:")
-    print(f"  Радиус: {R_opt[0]:.4f} м")
-    print(f"  Толщина: {R_opt[1]:.5f} м")
-    print(f"  Масса: {m_opt:.0f} кг")
+    # Создание тестовых задач
+    problems = create_test_problems()
+    print(f"\nCreated {len(problems)} test problems")
     
-    # Получаем задачи
-    problems = get_problems()
+    # Выбираем задачи для тестирования
+    test_problems = [p for p in problems if p['name'] in [
+        'sphere_c1_d2', 
+        'ellipsoid_c1_d2', 
+        'rastrigin_c1_d2',
+        'linear_c1_d2'
+    ]]
     
-    # Настройки эксперимента
-    N_RUNS = 10      # Количество запусков
-    N_ITER = 50      # Количество итераций
+    print(f"Testing on {len(test_problems)} problems: {[p['name'] for p in test_problems]}")
     
-    print(f"\nПараметры эксперимента:")
-    print(f"  Задачи: {', '.join(problems.keys())}")
-    print(f"  Методы: CEI, Penalty, Lagrange, Barrier")
-    print(f"  Количество запусков: {N_RUNS}")
-    print(f"  Итераций на запуск: {N_ITER}")
+    methods = ['CEI', 'Penalty', 'Lagrange', 'Barrier']
+    all_results = []
     
-    # Запускаем эксперименты
-    start_time = time.time()
-    results = run_experiments(problems, n_runs=N_RUNS, n_iter=N_ITER)
-    elapsed_time = time.time() - start_time
+    for problem in test_problems:
+        print(f"\n{'=' * 60}")
+        print(f"Problem: {problem['name']}")
+        print(f"{'=' * 60}")
+        
+        for method in methods:
+            print(f"\nRunning {method}...")
+            try:
+                result = run_optimization(problem, method, n_init=8, n_iter=15)
+                all_results.append(result)
+                print(f"  ✓ Best f(x) = {result['best_f']:.6f}")
+                print(f"  ✓ Constraint g(x) = {result['best_g']:.6f}")
+                print(f"  ✓ Time = {result['time']:.2f} sec")
+            except Exception as e:
+                print(f"  ✗ Error: {e}")
+                all_results.append({
+                    'method': method,
+                    'problem': problem['name'],
+                    'best_f': np.inf,
+                    'best_g': np.inf,
+                    'time': 0,
+                    'history': {'best_y': [np.inf]}
+                })
     
-    print(f"\nВремя выполнения: {elapsed_time:.1f} секунд")
+    # Построение графиков
+    print(f"\n{'=' * 60}")
+    print("Generating plots...")
+    print(f"{'=' * 60}")
     
-    # Сохраняем текстовые результаты
-    save_results(results, 'results.txt')
+    # Графики сходимости для каждой задачи
+    unique_problems = list(set([r['problem'] for r in all_results]))
+    for problem_name in unique_problems:
+        plot_convergence(all_results, problem_name)
     
-    # Рисуем графики
-    print("\nСоздание графиков...")
-    create_plots(results, m_opt)
+    # Сравнительная диаграмма
+    plot_comparison(all_results)
     
-    print("\n" + "=" * 80)
-    print("ГОТОВО!")
-    print("=" * 80)
-    print("\nФайлы результатов:")
-    print("  results.txt          - текстовые результаты")
-    print("  graph_convergence.png - график сходимости")
-    print("  graph_comparison.png  - сравнение методов")
-    print("=" * 80)
+    # Вывод результатов
+    print(f"\n{'=' * 60}")
+    print("FINAL RESULTS SUMMARY")
+    print(f"{'=' * 60}")
+    print(f"{'Problem':<20} {'Method':<12} {'Best f(x)':<15} {'Feasible':<10} {'Time (s)':<10}")
+    print("-" * 70)
+    
+    for result in sorted(all_results, key=lambda x: (x['problem'], x['method'])):
+        feasible = "✓" if result['best_g'] <= 1e-6 else "✗"
+        f_val = f"{result['best_f']:.6f}" if np.isfinite(result['best_f']) else "FAIL"
+        print(f"{result['problem']:<20} {result['method']:<12} {f_val:<15} {feasible:<10} {result['time']:.2f}")
+    
+    print("=" * 60)
+    print("\n✅ Plots saved:")
+    print("   - graph_comparison.png")
+    for problem_name in unique_problems:
+        print(f"   - graph_convergence_{problem_name}.png")
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
