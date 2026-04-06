@@ -1,102 +1,102 @@
-"""
-Метод Penalty - штрафная функция
-"""
+"""Реализация метода Penalty (штрафная функция)."""
 
+import math
 import numpy as np
-from scipy.stats import norm
-from .base import BaseBayesianOptimization
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+from .base import BayesianOptimizationBase
 
 
-class PenaltyBayesianOptimization(BaseBayesianOptimization):
-    """
-    Байесовская оптимизация с использованием штрафной функции.
-    
-    Используется штрафованная целевая функция:
-    f_penalty(x) = f(x) + ρ * max(0, g(x))^2
-    """
-    
-    def __init__(
-        self,
-        objective,
-        constraint,
-        bounds,
-        n_init=10,
-        n_iter=50,
-        random_state=None,
-        penalty_coeff=1e3  # Коэффициент штрафа
-    ):
-        super().__init__(
-            objective, constraint, bounds, n_init, n_iter, random_state
-        )
+class PenaltyBayesianOptimization(BayesianOptimizationBase):
+    """Байесовская оптимизация с квадратичной штрафной функцией."""
+
+    def __init__(self, penalty_coeff: float = 1e6, **kwargs) -> None:
+        super().__init__(**kwargs)
         self.penalty_coeff = penalty_coeff
-        
+        kernel = C(1.0, (1e-4, 1e1)) * RBF(1.0, (1e-4, 1e1)) + WhiteKernel(
+            1e-4, (1e-6, 1e-2)
+        )
+        self.gp = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            random_state=42,
+            n_restarts_optimizer=10,
+        )
+        self._init_random_sample()
+        self._fit_gp()
+
     def _penalized_objective(self, x: np.ndarray) -> float:
-        """
-        Штрафованная целевая функция.
-        """
-        f_val = self.objective(x)
-        g_val = self.constraint(x)
-        
-        # Квадратичный штраф
-        penalty = self.penalty_coeff * max(0, g_val) ** 2
-        
-        return f_val + penalty
-    
-    def _initialize(self) -> None:
-        """Переопределяем инициализацию для использования штрафованной функции."""
-        from src.experimental_design import lhs_sample
-        
-        # Генерация начальной выборки
-        self.X = lhs_sample(self.bounds, self.n_init, self.random_state)
-        
-        # Вычисление штрафованных значений
-        self.y = np.array([self._penalized_objective(x) for x in self.X])
-        self.c = np.array([self.constraint(x) for x in self.X])
-        
-        # Обучение моделей
-        self._train_models()
-        
-        # Сохранение в историю
-        self._update_history()
-    
-    def _acquisition_function(self, X: np.ndarray) -> np.ndarray:
-        """
-        Стандартный Expected Improvement для штрафованной функции.
-        """
-        mu_f, sigma_f, _, _ = self._predict(X)
-        
-        # Лучшее найденное значение штрафованной функции
-        f_best = np.min(self.y)
-        
-        # Расчет EI
-        delta = f_best - mu_f
-        with np.errstate(divide='ignore', invalid='ignore'):
-            Z = delta / sigma_f
-            EI = delta * norm.cdf(Z) + sigma_f * norm.pdf(Z)
-        
-        EI[sigma_f < 1e-9] = 0
-        
-        return EI
-    
-    def optimize(self):
-        """
-        Оптимизация с использованием штрафованной функции.
-        """
-        # Запускаем оптимизацию для штрафованной функции
-        result = super().optimize()
-        
-        # Пересчитываем результат для исходной целевой функции
-        final_X = result['history']['X'][-1]
-        final_y_original = np.array([self.objective(x) for x in final_X])
-        final_c = result['history']['c'][-1]
-        
-        feasible_mask = final_c <= 0
-        if np.any(feasible_mask):
-            best_idx = np.argmin(final_y_original[feasible_mask])
-            result['best_solution'] = {
-                'x': final_X[feasible_mask][best_idx],
-                'f': final_y_original[feasible_mask][best_idx],
-                'g': final_c[feasible_mask][best_idx]
-            }
-        
-        return result
+        """Вычисляет значение штрафной функции."""
+        fx = self.objective(x)
+        penalty = 0.0
+        for constraint in self.constraints:
+            violation = max(0.0, constraint(x))
+            penalty += violation**2
+        return fx + self.penalty_coeff * penalty
+
+    def _fit_gp(self) -> None:
+        """Обучает GP на штрафованных значениях."""
+        if len(self.X) < 2:
+            return
+        X_arr = np.array(self.X)
+        penalized_F = [self._penalized_objective(x) for x in self.X]
+        self.gp.fit(X_arr, penalized_F)
+
+    def _acquisition(self, x: np.ndarray) -> float:
+        """Expected Improvement для штрафованной функции."""
+        x = x.reshape(1, -1)
+        mu, sigma = self.gp.predict(x, return_std=True)
+        mu = mu[0]
+        sigma = sigma[0]
+
+        if sigma < 1e-12:
+            return 0.0
+
+        best_penalized = min(self._penalized_objective(xi) for xi in self.X)
+        gamma = (best_penalized - mu) / sigma
+        ei = (best_penalized - mu) * self._norm_cdf(gamma) + sigma * self._norm_pdf(
+            gamma
+        )
+        return ei
+
+    @staticmethod
+    def _norm_cdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    @staticmethod
+    def _norm_pdf(x: float) -> float:
+        return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+    def iterate(self) -> None:
+        """Одна итерация оптимизации."""
+        if len(self.X) < 2:
+            self._init_random_sample()
+            self._fit_gp()
+            return
+
+        best_x = None
+        best_acq = -np.inf
+
+        for _ in range(20):
+            x_candidate = np.array(
+                [np.random.uniform(low, high) for low, high in self.bounds]
+            )
+            acq = self._acquisition(x_candidate)
+            if acq > best_acq:
+                best_acq = acq
+                best_x = x_candidate
+
+        if best_x is None:
+            best_x = np.array(
+                [np.random.uniform(low, high) for low, high in self.bounds]
+            )
+
+        fx_new = self.objective(best_x)
+        self.X.append(best_x)
+        self.F.append(fx_new)
+
+        if self._is_feasible(best_x) and fx_new < self.best_feasible_value:
+            self.best_feasible_value = fx_new
+            self.best_feasible_point = best_x.copy()
+
+        self._fit_gp()

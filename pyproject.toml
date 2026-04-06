@@ -3,7 +3,7 @@ name = "bayesian-optimization"
 version = "0.1.0"
 description = "Bayesian optimization with constraints (CEI, Penalty, Lagrange, Barrier)"
 authors = [{name = "elizavetasurda", email = "elizaveta.surda@gmail.com"}]
-requires-python = ">=3.14"
+requires-python = ">=3.14"  
 dependencies = [
     "numpy>=1.26.0",
     "scipy>=1.11.0",
@@ -17,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.black]
 line-length = 88
-target-version = ['py314']
+target-version = ['py314']  # ← добавлено
 
 [tool.pylint]
 max-line-length = 88

@@ -21,7 +21,7 @@ def run_experiments(
 ) -> Dict:
     """
     Run experiments comparing constraint handling methods.
-    
+
     Parameters
     ----------
     dimension : int
@@ -36,7 +36,7 @@ def run_experiments(
         Constraint handling methods to compare.
     use_coco : bool
         Whether to use COCO bbob-constrained problems.
-        
+
     Returns
     -------
     dict
@@ -44,27 +44,28 @@ def run_experiments(
     """
     if methods is None:
         methods = ["CEI", "Penalty", "Lagrange", "Barrier"]
-    
+
     # Define test problems
     problems = []
     problem_names = []
-    
+
     # Built-in problems
     problems.append(Sphere(dim=dimension))
     problem_names.append("Sphere")
-    
+
     problems.append(Rosenbrock(dim=dimension))
     problem_names.append("Rosenbrock")
-    
+
     problems.append(Ackley(dim=dimension))
     problem_names.append("Ackley")
-    
+
     # Try to add COCO problems
     if use_coco:
         try:
             from .bbob_wrapper import BBOBSuite
+
             coco_suite = BBOBSuite(dimension=dimension, instances=[1])
-            
+
             # Add first 3 COCO problems for time reasons
             for i, prob_desc in enumerate(coco_suite.problems[:3]):
                 # Create wrapper
@@ -75,29 +76,29 @@ def run_experiments(
                         self.dim = prob_desc.dimension
                         self.bounds = prob_desc.bounds
                         self.has_constraints = True
-                    
+
                     def objective(self, x):
                         f, _ = self.suite.evaluate(self.prob_desc, x)
                         return f
-                    
+
                     def constraints(self, x):
                         _, g = self.suite.evaluate(self.prob_desc, x)
                         return g
-                    
+
                     def evaluate(self, x):
                         return self.suite.evaluate(self.prob_desc, x)
-                    
+
                     def is_feasible(self, x, tol=1e-8):
                         g = self.constraints(x)
                         return np.all(g <= tol)
-                
+
                 wrapped = COCOProblemWrapper(coco_suite, prob_desc)
                 problems.append(wrapped)
                 problem_names.append(prob_desc.function_name)
         except Exception as e:
             print(f"Warning: Could not load COCO problems: {e}")
             print("Using only built-in problems.")
-    
+
     results = {
         "config": {
             "dimension": dimension,
@@ -108,21 +109,21 @@ def run_experiments(
         },
         "problems": {},
     }
-    
+
     for prob, prob_name in zip(problems, problem_names):
         print(f"\n{'='*60}")
         print(f"Problem: {prob_name}")
         print(f"{'='*60}")
-        
+
         prob_results = {}
-        
+
         for method in methods:
             print(f"\n--- Method: {method} ---")
-            
+
             trial_results = []
             for trial in range(n_trials):
                 print(f"  Trial {trial+1}/{n_trials}...", end=" ")
-                
+
                 # Run optimization
                 optimizer = BayesianOptimization(
                     problem=prob,
@@ -131,12 +132,14 @@ def run_experiments(
                     n_iterations=n_iterations,
                     random_seed=42 + trial,
                 )
-                
+
                 result = optimizer.optimize(verbose=False)
                 trial_results.append(result)
-                
-                print(f"best={result.best_objective:.4f}, feasible={result.is_feasible}")
-            
+
+                print(
+                    f"best={result.best_objective:.4f}, feasible={result.is_feasible}"
+                )
+
             # Aggregate results
             best_values = [r.best_objective for r in trial_results if r.is_feasible]
             if best_values:
@@ -147,7 +150,7 @@ def run_experiments(
                 mean_best = np.inf
                 std_best = 0
                 success_rate = 0
-            
+
             prob_results[method] = {
                 "mean_best": mean_best,
                 "std_best": std_best,
@@ -161,15 +164,15 @@ def run_experiments(
                     }
                     for r in trial_results
                 ],
-                "history": [
-                    [h["best_f"] for h in r.history] for r in trial_results
-                ],
+                "history": [[h["best_f"] for h in r.history] for r in trial_results],
             }
-            
-            print(f"  Mean best: {mean_best:.4f} ± {std_best:.4f}, Success: {success_rate:.0%}")
-        
+
+            print(
+                f"  Mean best: {mean_best:.4f} ± {std_best:.4f}, Success: {success_rate:.0%}"
+            )
+
         results["problems"][prob_name] = prob_results
-    
+
     # Save results to file
     output_file = Path("results.txt")
     with open(output_file, "w") as f:
@@ -179,7 +182,7 @@ def run_experiments(
         f.write(f"Trials per problem: {n_trials}\n")
         f.write(f"Initial points: {n_initial}\n")
         f.write(f"BO iterations: {n_iterations}\n\n")
-        
+
         for prob_name, prob_res in results["problems"].items():
             f.write(f"\n{prob_name}\n")
             f.write("-" * 40 + "\n")
@@ -189,7 +192,7 @@ def run_experiments(
                 f.write(f"    Std: {res['std_best']:.6f}\n")
                 f.write(f"    Success rate: {res['success_rate']:.0%}\n")
             f.write("\n")
-    
+
     print(f"\n✓ Results saved to {output_file}")
-    
+
     return results

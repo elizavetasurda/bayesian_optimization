@@ -11,15 +11,12 @@ from typing import Tuple, Optional
 class SurrogateModel:
     """
     Gaussian Process surrogate for objective function.
-    
+
     Provides posterior mean and variance predictions.
     """
-    
+
     def __init__(
-        self,
-        length_scale: float = 1.0,
-        noise: float = 1e-6,
-        kernel: str = "matern"
+        self, length_scale: float = 1.0, noise: float = 1e-6, kernel: str = "matern"
     ):
         """
         Parameters
@@ -35,23 +32,23 @@ class SurrogateModel:
             base_kernel = RBF(length_scale=length_scale)
         else:
             base_kernel = Matern(length_scale=length_scale, nu=2.5)
-        
+
         self.kernel = base_kernel + WhiteKernel(noise_level=noise)
         self.gp = GaussianProcessRegressor(
             kernel=self.kernel,
             n_restarts_optimizer=10,
             alpha=1e-6,
             normalize_y=True,
-            random_state=42
+            random_state=42,
         )
         self.X_train = None
         self.y_train = None
         self._is_fitted = False
-    
+
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
         """
         Fit GP to training data.
-        
+
         Parameters
         ----------
         X : np.ndarray, shape (n_points, n_dim)
@@ -63,16 +60,16 @@ class SurrogateModel:
         self.y_train = y.copy()
         self.gp.fit(X, y)
         self._is_fitted = True
-    
+
     def predict(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Predict mean and variance at new points.
-        
+
         Parameters
         ----------
         X : np.ndarray, shape (n_points, n_dim)
             Points to predict.
-            
+
         Returns
         -------
         tuple
@@ -80,14 +77,14 @@ class SurrogateModel:
         """
         if not self._is_fitted:
             raise RuntimeError("Model not fitted yet")
-        
+
         mean, std = self.gp.predict(X, return_std=True)
-        return mean, std ** 2
-    
+        return mean, std**2
+
     def update(self, X_new: np.ndarray, y_new: np.ndarray) -> None:
         """
         Update model with new data points.
-        
+
         Parameters
         ----------
         X_new : np.ndarray
@@ -101,20 +98,20 @@ class SurrogateModel:
         else:
             X_combined = np.vstack([self.X_train, X_new])
             y_combined = np.hstack([self.y_train, y_new])
-        
+
         self.fit(X_combined, y_combined)
-    
+
     def sample_from_posterior(self, X: np.ndarray, n_samples: int = 1) -> np.ndarray:
         """
         Sample from posterior distribution.
-        
+
         Parameters
         ----------
         X : np.ndarray
             Input points.
         n_samples : int
             Number of samples.
-            
+
         Returns
         -------
         np.ndarray
@@ -122,5 +119,5 @@ class SurrogateModel:
         """
         if not self._is_fitted:
             raise RuntimeError("Model not fitted yet")
-        
+
         return self.gp.sample_y(X, n_samples=n_samples, random_state=42)

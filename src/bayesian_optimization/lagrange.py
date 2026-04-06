@@ -1,115 +1,97 @@
-"""
-Метод Augmented Lagrangian
-"""
+"""Реализация метода Lagrange (множители Лагранжа с GP)."""
 
+import math
 import numpy as np
-from scipy.stats import norm
-from .base import BaseBayesianOptimization
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+from .base import BayesianOptimizationBase
 
 
-class LagrangeBayesianOptimization(BaseBayesianOptimization):
-    """
-    Байесовская оптимизация с Augmented Lagrangian методом.
-    
-    Используется лагранжиан:
-    L(x, λ, ρ) = f(x) + λ * g(x) + (ρ/2) * max(0, g(x))^2
-    """
-    
-    def __init__(
-        self,
-        objective,
-        constraint,
-        bounds,
-        n_init=10,
-        n_iter=50,
-        random_state=None,
-        rho=1.0,      # Штрафной параметр
-        lambda0=0.0    # Начальное значение множителя Лагранжа
-    ):
-        super().__init__(
-            objective, constraint, bounds, n_init, n_iter, random_state
+class LagrangeBayesianOptimization(BayesianOptimizationBase):
+    """Байесовская оптимизация с лагранжевой функцией."""
+
+    def __init__(self, lagrange_lambda: float = 100.0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.lagrange_lambda = lagrange_lambda
+        kernel = C(1.0, (1e-4, 1e1)) * RBF(1.0, (1e-4, 1e1)) + WhiteKernel(
+            1e-4, (1e-6, 1e-2)
         )
-        self.rho = rho
-        self.lambda_ = lambda0
-        
+        self.gp = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            random_state=42,
+            n_restarts_optimizer=10,
+        )
+        self._init_random_sample()
+        self._fit_gp()
+
     def _lagrangian(self, x: np.ndarray) -> float:
-        """
-        Вычисление Augmented Lagrangian.
-        """
-        f_val = self.objective(x)
-        g_val = self.constraint(x)
-        
-        # Augmented Lagrangian
-        if g_val > 0:
-            lag = f_val + self.lambda_ * g_val + 0.5 * self.rho * g_val ** 2
-        else:
-            lag = f_val + self.lambda_ * g_val
-        
-        return lag
-    
-    def _update_lagrange_multiplier(self, g_val: float) -> None:
-        """
-        Обновление множителя Лагранжа.
-        """
-        self.lambda_ = max(0, self.lambda_ + self.rho * g_val)
-    
-    def _initialize(self) -> None:
-        """Инициализация с использованием лагранжиана."""
-        from src.experimental_design import lhs_sample
-        
-        # Генерация начальной выборки
-        self.X = lhs_sample(self.bounds, self.n_init, self.random_state)
-        
-        # Вычисление лагранжиана
-        self.y = np.array([self._lagrangian(x) for x in self.X])
-        self.c = np.array([self.constraint(x) for x in self.X])
-        
-        # Обновление множителя Лагранжа
-        worst_g = np.max(self.c)
-        if worst_g > 0:
-            self._update_lagrange_multiplier(worst_g)
-        
-        # Обучение моделей
-        self._train_models()
-        
-        # Сохранение в историю
-        self._update_history()
-    
-    def _acquisition_function(self, X: np.ndarray) -> np.ndarray:
-        """
-        Expected Improvement для лагранжиана.
-        """
-        mu_f, sigma_f, _, _ = self._predict(X)
-        
-        f_best = np.min(self.y)
-        
-        delta = f_best - mu_f
-        with np.errstate(divide='ignore', invalid='ignore'):
-            Z = delta / sigma_f
-            EI = delta * norm.cdf(Z) + sigma_f * norm.pdf(Z)
-        
-        EI[sigma_f < 1e-9] = 0
-        
-        return EI
-    
-    def optimize(self):
-        """
-        Оптимизация с Augmented Lagrangian.
-        """
-        result = super().optimize()
-        
-        # Пересчет для исходной функции
-        final_X = result['history']['X'][-1]
-        final_y_original = np.array([self.objective(x) for x in final_X])
-        final_c = result['history']['c'][-1]
-        
-        feasible_mask = final_c <= 0
-        if np.any(feasible_mask):
-            best_idx = np.argmin(final_y_original[feasible_mask])
-            result['best_solution'] = {
-                'x': final_X[feasible_mask][best_idx],
-                'f': final_y_original[feasible_mask][best_idx],
-                'g': final_c[feasible_mask][best_idx]
-            }
-        
-        return result
+        """Вычисляет лагранжиан: f(x) + lambda * sum(max(0, g_i(x)))."""
+        fx = self.objective(x)
+        penalty = 0.0
+        for constraint in self.constraints:
+            penalty += max(0.0, constraint(x))
+        return fx + self.lagrange_lambda * penalty
+
+    def _fit_gp(self) -> None:
+        if len(self.X) < 2:
+            return
+        X_arr = np.array(self.X)
+        lagrangian_F = [self._lagrangian(x) for x in self.X]
+        self.gp.fit(X_arr, lagrangian_F)
+
+    def _acquisition(self, x: np.ndarray) -> float:
+        x = x.reshape(1, -1)
+        mu, sigma = self.gp.predict(x, return_std=True)
+        mu = mu[0]
+        sigma = sigma[0]
+
+        if sigma < 1e-12:
+            return 0.0
+
+        best_lagrangian = min(self._lagrangian(xi) for xi in self.X)
+        gamma = (best_lagrangian - mu) / sigma
+        return (best_lagrangian - mu) * self._norm_cdf(gamma) + sigma * self._norm_pdf(
+            gamma
+        )
+
+    @staticmethod
+    def _norm_cdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    @staticmethod
+    def _norm_pdf(x: float) -> float:
+        return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+    def iterate(self) -> None:
+        if len(self.X) < 2:
+            self._init_random_sample()
+            self._fit_gp()
+            return
+
+        best_x = None
+        best_acq = -np.inf
+
+        for _ in range(20):
+            x_candidate = np.array(
+                [np.random.uniform(low, high) for low, high in self.bounds]
+            )
+            acq = self._acquisition(x_candidate)
+            if acq > best_acq:
+                best_acq = acq
+                best_x = x_candidate
+
+        if best_x is None:
+            best_x = np.array(
+                [np.random.uniform(low, high) for low, high in self.bounds]
+            )
+
+        fx_new = self.objective(best_x)
+        self.X.append(best_x)
+        self.F.append(fx_new)
+
+        if self._is_feasible(best_x) and fx_new < self.best_feasible_value:
+            self.best_feasible_value = fx_new
+            self.best_feasible_point = best_x.copy()
+
+        self._fit_gp()

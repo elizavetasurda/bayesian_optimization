@@ -1,0 +1,22 @@
+[MASTER]
+ignore=venv,.venv,results,build,dist
+ignore-patterns=__pycache__,*.pyc
+
+[MESSAGES CONTROL]
+disable=
+    missing-docstring,
+    too-many-arguments,
+    too-many-instance-attributes,
+    too-many-locals,
+    too-many-branches,
+    invalid-name,
+    duplicate-code,
+    too-few-public-methods
+
+[FORMAT]
+max-line-length=88
+indent-string="    "
+
+[BASIC]
+good-names=i,j,k,x,y,X,Y,f,ax,fig,dim,n,gp
+bad-names=foo,bar,baz
