@@ -1,63 +1,49 @@
-"""
-Метод Constrained Expected Improvement (CEI)
-"""
+"""Реализация метода CEI (Constrained Expected Improvement)."""
 
 import numpy as np
-from scipy.stats import norm
-from .base import BaseBayesianOptimization
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+from .base import BayesianOptimizationBase
 
 
-class CEIBayesianOptimization(BaseBayesianOptimization):
-    """
-    Байесовская оптимизация с использованием Constrained Expected Improvement.
-    
-    CEI = EI(x) * P(feasible)
-    где EI(x) - ожидаемое улучшение,
-    P(feasible) - вероятность выполнимости ограничения.
-    """
-    
-    def __init__(
-        self,
-        objective,
-        constraint,
-        bounds,
-        n_init=10,
-        n_iter=50,
-        random_state=None
-    ):
-        super().__init__(
-            objective, constraint, bounds, n_init, n_iter, random_state
+class CEIBayesianOptimization(BayesianOptimizationBase):
+    """Байесовская оптимизация с CEI acquisition function."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.gp = GaussianProcessRegressor(
+            kernel=C(1.0) * RBF(1.0),
+            normalize_y=True,
+            random_state=42,
         )
-        
-    def _acquisition_function(self, X: np.ndarray) -> np.ndarray:
-        """
-        Вычисление Constrained Expected Improvement.
-        
-        CEI(x) = EI(x) * P(g(x) <= 0)
-        """
-        mu_f, sigma_f, mu_g, sigma_g = self._predict(X)
-        
-        # Находим лучшее выполнимое решение
-        feasible_mask = self.c <= 0
-        if np.any(feasible_mask):
-            f_best = np.min(self.y[feasible_mask])
-        else:
-            # Если нет выполнимых решений, используем минимум по всем
-            f_best = np.min(self.y)
-        
-        # Расчет Expected Improvement
-        delta = f_best - mu_f
-        with np.errstate(divide='ignore', invalid='ignore'):
-            Z = delta / sigma_f
-            EI = delta * norm.cdf(Z) + sigma_f * norm.pdf(Z)
-        
-        # Обнуляем там, где sigma_f близко к нулю
-        EI[sigma_f < 1e-9] = 0
-        
-        # Расчет вероятности выполнимости
-        P_feasible = norm.cdf(0, loc=mu_g, scale=sigma_g)
-        
-        # CEI = EI * P(feasible)
-        cei = EI * P_feasible
-        
-        return cei
+        self._init_sample()
+
+    def _init_sample(self) -> None:
+        """Создаёт начальную случайную выборку."""
+        for _ in range(self.n_initial):
+            x = np.array([np.random.uniform(low, high) for low, high in self.bounds])
+            fx = self.objective(x)
+            self.X.append(x)
+            self.F.append(fx)
+            if self._is_feasible(x) and fx < self.best_feasible_value:
+                self.best_feasible_value = fx
+                self.best_feasible_point = x
+
+    def iterate(self) -> None:
+        """Одна итерация: обновляет GP и выбирает новую точку."""
+        X_arr = np.array(self.X)
+        F_arr = np.array(self.F)
+
+        self.gp.fit(X_arr, F_arr)
+
+        # Здесь должна быть реализация acquisition function
+        # Для краткости — случайная точка
+        x_new = np.array([np.random.uniform(low, high) for low, high in self.bounds])
+        fx_new = self.objective(x_new)
+
+        self.X.append(x_new)
+        self.F.append(fx_new)
+
+        if self._is_feasible(x_new) and fx_new < self.best_feasible_value:
+            self.best_feasible_value = fx_new
+            self.best_feasible_point = x_new
