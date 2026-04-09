@@ -6,6 +6,7 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 from src.bayesian_optimization.cei import CEIBayesianOptimization
 from src.bayesian_optimization.penalty import PenaltyBayesianOptimization
@@ -192,7 +193,6 @@ def main() -> None:
                 print()
 
     # Сохраняем сводку
-    import os
     os.makedirs("results", exist_ok=True)
     
     with open("results/summary.txt", "w", encoding="utf-8") as f:
@@ -236,6 +236,13 @@ def main() -> None:
             plt.title(f"Сходимость методов на {problem} (размерность={dim})", fontsize=14)
             plt.legend(loc="upper right", fontsize=10)
             plt.grid(True, alpha=0.3)
+            
+            # ИСПРАВЛЕНО: правильная проверка для linear
+            if "linear" in problem.lower():
+                plt.yscale("linear")
+            else:
+                plt.yscale("log")
+            
             plt.tight_layout()
             plt.savefig(f"results/convergence_{problem}_dim{dim}.png", dpi=150)
             plt.close()
