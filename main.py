@@ -24,19 +24,7 @@ def run_optimization(
     seed: int = 42,
     verbose: bool = True,
 ) -> Result:
-    """Запускает оптимизацию заданным методом на заданной задаче.
-
-    Args:
-        problem_name: Имя задачи ('sphere', 'rosenbrock', 'pressure_vessel')
-        method_name: Имя метода ('CEI', 'Penalty', 'Lagrange', 'Barrier')
-        n_iterations: Количество итераций
-        n_initial: Размер начальной выборки
-        seed: Seed для воспроизводимости
-        verbose: Выводить ли прогресс каждой итерации
-
-    Returns:
-        Result: Объект с результатами
-    """
+    """Запускает оптимизацию заданным методом на заданной задаче."""
     np.random.seed(seed)
     problem = get_problem(problem_name)
 
@@ -82,7 +70,6 @@ def run_optimization(
         best_values.append(current_best)
         
         if verbose:
-            # Выводим каждые 5 итераций или если улучшение
             if (i + 1) % 5 == 0 or i == 0 or i == n_iterations - 1:
                 print(f"    Итерация {i+1:3d}/{n_iterations}: best = {current_best:.8f}")
 
@@ -104,19 +91,7 @@ def run_with_seeds(
     n_seeds: int = 5,
     verbose: bool = True,
 ) -> dict:
-    """Запускает оптимизацию несколько раз с разными seed и усредняет результаты.
-
-    Args:
-        problem_name: Имя задачи
-        method_name: Имя метода
-        n_iterations: Количество итераций
-        n_initial: Размер начальной выборки
-        n_seeds: Количество случайных запусков
-        verbose: Выводить ли прогресс
-
-    Returns:
-        dict: Усреднённые результаты
-    """
+    """Запускает оптимизацию несколько раз с разными seed и усредняет результаты."""
     all_results = []
     for seed in range(n_seeds):
         if verbose:
@@ -147,6 +122,124 @@ def run_with_seeds(
     }
 
 
+def plot_convergence_comparison(all_summaries: list, problems: list, dimensions: list, n_initial: int) -> None:
+    """Строит графики сходимости для всех задач и размерностей."""
+    
+    # Словарь для переименования методов на русский (если нужно)
+    method_names_ru = {
+        "CEI": "CEI",
+        "Penalty": "Штраф",
+        "Lagrange": "Лагранж",
+        "Barrier": "Барьер"
+    }
+    
+    for problem in problems:
+        for dim in dimensions:
+            # Фильтруем данные для текущей задачи и размерности
+            problem_data = [s for s in all_summaries 
+                           if s["problem"] == problem and s["dimension"] == dim]
+            
+            if not problem_data:
+                print(f"Нет данных для {problem} dim={dim}")
+                continue
+                
+            plt.figure(figsize=(10, 6))
+            
+            for data in problem_data:
+                method = data["method"]
+                iterations = range(len(data["mean_convergence"]))
+                
+                # Основная линия
+                plt.plot(iterations, data["mean_convergence"], 
+                        label=method_names_ru.get(method, method), linewidth=2)
+                
+                # Доверительный интервал
+                plt.fill_between(
+                    iterations,
+                    data["mean_convergence"] - data["std_convergence"],
+                    data["mean_convergence"] + data["std_convergence"],
+                    alpha=0.2,
+                )
+            
+            # Вертикальная линия для начальной выборки
+            plt.axvline(x=n_initial, color="gray", linestyle="--", linewidth=1.5, 
+                       label=f"Начальная выборка ({n_initial})")
+            
+            plt.xlabel("Итерация", fontsize=12)
+            plt.ylabel("Лучшее допустимое значение (среднее)", fontsize=12)
+            plt.title(f"Сходимость методов на {problem.capitalize()} (размерность={dim})", fontsize=14)
+            plt.legend(loc="upper right", fontsize=10)
+            plt.grid(True, alpha=0.3)
+            
+            # Логарифмическая шкала для большинства задач
+            if problem in ["sphere", "rosenbrock"]:
+                plt.yscale("log")
+            
+            plt.tight_layout()
+            
+            # ИСПРАВЛЕНО: Сохраняем с правильными именами файлов
+            filename = f"graph_convergence_{problem}_c1_dim{dim}.png"
+            filepath = os.path.join("results", filename)
+            plt.savefig(filepath, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"   Сохранён график: {filepath}")
+
+
+def plot_all_methods_comparison(all_summaries: list, problems: list, dimensions: list) -> None:
+    """Строит сравнительные графики для всех методов на одной фигуре."""
+    
+    fig, axes = plt.subplots(len(problems), len(dimensions), figsize=(15, 10))
+    
+    # Если только одна подзадача, делаем axes двумерным
+    if len(problems) == 1:
+        axes = axes.reshape(1, -1)
+    if len(dimensions) == 1:
+        axes = axes.reshape(-1, 1)
+    
+    method_names_ru = {
+        "CEI": "CEI",
+        "Penalty": "Штраф",
+        "Lagrange": "Лагранж",
+        "Barrier": "Барьер"
+    }
+    
+    colors = ['blue', 'green', 'red', 'orange']
+    
+    for i, problem in enumerate(problems):
+        for j, dim in enumerate(dimensions):
+            ax = axes[i, j]
+            
+            problem_data = [s for s in all_summaries 
+                           if s["problem"] == problem and s["dimension"] == dim]
+            
+            for idx, data in enumerate(problem_data):
+                method = data["method"]
+                iterations = range(len(data["mean_convergence"]))
+                
+                ax.plot(iterations, data["mean_convergence"], 
+                       label=method_names_ru.get(method, method),
+                       linewidth=2, color=colors[idx % len(colors)])
+                ax.fill_between(
+                    iterations,
+                    data["mean_convergence"] - data["std_convergence"],
+                    data["mean_convergence"] + data["std_convergence"],
+                    alpha=0.2,
+                    color=colors[idx % len(colors)]
+                )
+            
+            ax.set_xlabel("Итерация")
+            ax.set_ylabel("Лучшее значение")
+            ax.set_title(f"{problem.capitalize()}, dim={dim}")
+            ax.grid(True, alpha=0.3)
+            ax.set_yscale("log")
+            ax.legend(fontsize=8)
+    
+    plt.tight_layout()
+    plt.savefig("results/graph_comparison.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("   Сохранён график: results/graph_comparison.png")
+
+
 def main() -> None:
     """Главная функция: запускает все методы на всех задачах с разными размерностями."""
     problems = ["sphere", "rosenbrock"]
@@ -162,6 +255,7 @@ def main() -> None:
         for dim in dimensions:
             # Получаем задачу с нужной размерностью
             base_problem = get_problem(problem)
+            
             # Изменяем bounds для нужной размерности
             if problem == "sphere":
                 bounds = [(-5.0, 5.0)] * dim
@@ -170,7 +264,6 @@ def main() -> None:
             else:
                 bounds = base_problem["bounds"]
 
-            # Временно подменяем bounds
             base_problem["bounds"] = bounds
 
             for method in methods:
@@ -192,9 +285,10 @@ def main() -> None:
                 print(f"   Результат: {summary['mean_best']:.8f} ± {summary['std_best']:.8f}")
                 print()
 
-    # Сохраняем сводку
+    # Создаём папку для результатов
     os.makedirs("results", exist_ok=True)
     
+    # Сохраняем сводку
     with open("results/summary.txt", "w", encoding="utf-8") as f:
         f.write("Результаты экспериментов\n")
         f.write("=" * 70 + "\n\n")
@@ -205,48 +299,16 @@ def main() -> None:
                 f"  Стандартное отклонение: {s['std_best']:.8f}\n\n"
             )
 
-    # Построение графиков для каждой размерности
+    # Построение графиков
     print("\n" + "=" * 70)
     print(" Построение графиков...")
     print("=" * 70)
     
-    for problem in problems:
-        for dim in dimensions:
-            plt.figure(figsize=(10, 6))
-            for method in methods:
-                data = next(
-                    (s for s in all_summaries 
-                     if s["problem"] == problem and s["method"] == method and s["dimension"] == dim),
-                    None,
-                )
-                if data is not None:
-                    iterations = range(len(data["mean_convergence"]))
-                    plt.plot(iterations, data["mean_convergence"], label=method, linewidth=2)
-                    plt.fill_between(
-                        iterations,
-                        data["mean_convergence"] - data["std_convergence"],
-                        data["mean_convergence"] + data["std_convergence"],
-                        alpha=0.2,
-                    )
-            
-            plt.axvline(x=n_initial, color="gray", linestyle="--", linewidth=1.5, 
-                       label=f"Начальная выборка ({n_initial})")
-            plt.xlabel("Итерация", fontsize=12)
-            plt.ylabel("Лучшее допустимое значение (среднее)", fontsize=12)
-            plt.title(f"Сходимость методов на {problem} (размерность={dim})", fontsize=14)
-            plt.legend(loc="upper right", fontsize=10)
-            plt.grid(True, alpha=0.3)
-            
-            # ИСПРАВЛЕНО: правильная проверка для linear
-            if "linear" in problem.lower():
-                plt.yscale("linear")
-            else:
-                plt.yscale("log")
-            
-            plt.tight_layout()
-            plt.savefig(f"results/convergence_{problem}_dim{dim}.png", dpi=150)
-            plt.close()
-            print(f"   Сохранён график: results/convergence_{problem}_dim{dim}.png")
+    # Графики для каждой задачи и размерности
+    plot_convergence_comparison(all_summaries, problems, dimensions, n_initial)
+    
+    # Сравнительный график всех методов
+    plot_all_methods_comparison(all_summaries, problems, dimensions)
 
     # Сохраняем все результаты в JSON
     all_results = []
@@ -266,7 +328,7 @@ def main() -> None:
     print(" Результаты сохранены в папке results/")
     print("   - summary.txt - сводка результатов")
     print("   - all_results.json - полные результаты")
-    print("   - convergence_*.png - графики сходимости")
+    print("   - graph_*.png - графики сходимости")
     print("=" * 70)
 
 
