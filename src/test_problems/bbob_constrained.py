@@ -1,197 +1,357 @@
-"""
-Модуль с тестовыми задачами (собственная реализация, без coco-experiment)
+"""Набор тестовых задач для байесовской оптимизации с ограничениями.
+
+Содержит 10 задач различной сложности для тестирования методов оптимизации.
+Все задачи имеют ограничения и известные глобальные оптимумы.
 """
 
 import numpy as np
-from typing import Callable, Tuple, List, Dict
+from src.utils.types import OptimizationProblem
 
 
-class BBOBConstrainedProblem:
+class BBOBConstrainedProblems:
+    """Класс-контейнер для тестовых задач."""
+
+    @staticmethod
+    def sphere(x: np.ndarray) -> float:
+        """
+        Сферическая функция.
+
+        Формула: f(x) = sum(x_i^2)
+        Свойства: гладкая, выпуклая, унимодальная
+        Глобальный минимум: 0 в точке 0
+
+        Параметры:
+            x: Входной вектор
+
+        Возвращает:
+            Значение функции
+        """
+        return float(np.sum(x ** 2))
+
+    @staticmethod
+    def rosenbrock(x: np.ndarray) -> float:
+        """
+        Функция Розенброка.
+
+        Формула: f(x) = sum(100*(x_{i+1} - x_i^2)^2 + (1 - x_i)^2)
+        Свойства: овражная, сложная для оптимизации
+        Глобальный минимум: 0 в точке (1,1,...,1)
+
+        Параметры:
+            x: Входной вектор
+
+        Возвращает:
+            Значение функции
+        """
+        result = 0.0
+        for i in range(len(x) - 1):
+            result += 100.0 * (x[i + 1] - x[i] ** 2) ** 2 + (1 - x[i]) ** 2
+        return float(result)
+
+    @staticmethod
+    def rastrigin(x: np.ndarray) -> float:
+        """
+        Функция Растригина.
+
+        Формула: f(x) = 10*n + sum(x_i^2 - 10*cos(2πx_i))
+        Свойства: многоэкстремальная, множество локальных минимумов
+        Глобальный минимум: 0 в точке 0
+
+        Параметры:
+            x: Входной вектор
+
+        Возвращает:
+            Значение функции
+        """
+        n = len(x)
+        return float(10 * n + np.sum(x ** 2 - 10 * np.cos(2 * np.pi * x)))
+
+    @staticmethod
+    def quadratic(x: np.ndarray) -> float:
+        """
+        Квадратичная функция.
+
+        Формула: f(x) = x0^2 + 2*x1^2 (для 2D) или +3*x2^2 (для 3D)
+        Свойства: выпуклая, плохо обусловленная
+        Глобальный минимум: 0 в точке 0
+
+        Параметры:
+            x: Входной вектор
+
+        Возвращает:
+            Значение функции
+        """
+        if len(x) == 2:
+            return float(x[0] ** 2 + 2 * x[1] ** 2)
+        return float(x[0] ** 2 + 2 * x[1] ** 2 + 3 * x[2] ** 2)
+
+    @staticmethod
+    def booth(x: np.ndarray) -> float:
+        """
+        Функция Бута.
+
+        Формула: f(x,y) = (x + 2y - 7)^2 + (2x + y - 5)^2
+        Свойства: выпуклая, унимодальная
+        Глобальный минимум: 0 в точке (1, 3)
+
+        Параметры:
+            x: Входной вектор (2D)
+
+        Возвращает:
+            Значение функции
+        """
+        return float((x[0] + 2*x[1] - 7)**2 + (2*x[0] + x[1] - 5)**2)
+
+    @staticmethod
+    def linear_constraint_1(x: np.ndarray) -> float:
+        """
+        Линейное ограничение 1.
+
+        Формула: x0 + x1 - 1 <= 0
+        Создаёт верхнюю границу допустимой области.
+
+        Параметры:
+            x: Входной вектор
+
+        Возвращает:
+            Значение ограничения (<=0 для допустимых точек)
+        """
+        return float(x[0] + x[1] - 1.0)
+
+    @staticmethod
+    def linear_constraint_2(x: np.ndarray) -> float:
+        """
+        Линейное ограничение 2.
+
+        Формула: -x0 - x1 + 0.5 <= 0 (эквивалентно x0 + x1 >= 0.5)
+        Создаёт нижнюю границу допустимой области.
+
+        Параметры:
+            x: Входной вектор
+
+        Возвращает:
+            Значение ограничения (<=0 для допустимых точек)
+        """
+        return float(-x[0] - x[1] + 0.5)
+
+    @staticmethod
+    def circle_constraint(x: np.ndarray) -> float:
+        """
+        Круговое ограничение.
+
+        Формула: x0^2 + x1^2 - 1 <= 0
+        Ограничивает точки кругом радиуса 1.
+
+        Параметры:
+            x: Входной вектор (2D)
+
+        Возвращает:
+            Значение ограничения (<=0 для допустимых точек)
+        """
+        return float(x[0] ** 2 + x[1] ** 2 - 1.0)
+
+    @staticmethod
+    def circle_constraint_3d(x: np.ndarray) -> float:
+        """
+        Шаровое ограничение (3D).
+
+        Формула: x0^2 + x1^2 + x2^2 - 1 <= 0
+        Ограничивает точки шаром радиуса 1.
+
+        Параметры:
+            x: Входной вектор (3D)
+
+        Возвращает:
+            Значение ограничения (<=0 для допустимых точек)
+        """
+        return float(x[0] ** 2 + x[1] ** 2 + x[2] ** 2 - 1.0)
+
+    @staticmethod
+    def circle_constraint_offset(x: np.ndarray) -> float:
+        """
+        Смещённое круговое ограничение.
+
+        Формула: (x0-0.5)^2 + (x1-0.5)^2 - 0.25 <= 0
+        Ограничивает точки кругом радиуса 0.5 с центром в (0.5, 0.5).
+
+        Параметры:
+            x: Входной вектор (2D)
+
+        Возвращает:
+            Значение ограничения (<=0 для допустимых точек)
+        """
+        return float((x[0] - 0.5) ** 2 + (x[1] - 0.5) ** 2 - 0.25)
+
+    @staticmethod
+    def nonlinear_constraint(x: np.ndarray) -> float:
+        """
+        Нелинейное ограничение.
+
+        Формула: x0 * x1 - 0.1 <= 0
+        Создаёт гиперболическую границу.
+
+        Параметры:
+            x: Входной вектор (2D)
+
+        Возвращает:
+            Значение ограничения (<=0 для допустимых точек)
+        """
+        return float(x[0] * x[1] - 0.1)
+
+
+def create_bbob_problem_set() -> list[OptimizationProblem]:
     """
-    Класс для работы с тестовыми задачами.
-    """
+    Создание набора из 10 тестовых задач.
 
-    def __init__(self, name: str, n_constraints: int, dimension: int = 2):
-        """
-        Parameters
-        ----------
-        name : str
-            Название целевой функции: 'sphere', 'ellipsoid', 'rastrigin', 'linear'
-        n_constraints : int
-            Количество ограничений: 1, 3, 9
-        dimension : int
-            Размерность задачи (2, 3, 5)
-        """
-        self.name = name
-        self.n_constraints = n_constraints
-        self.dimension = dimension
+    Задачи включают различные типы целевых функций:
+    - Простые (Sphere, Quadratic)
+    - Овражные (Rosenbrock)
+    - Многоэкстремальные (Rastrigin)
+    - Выпуклые (Booth)
+    - Различные размерности (2D и 3D)
+    - Различные типы ограничений (линейные, круговые, нелинейные)
 
-        # Случайное смещение оптимума
-        np.random.seed(42)  # Фиксируем seed для воспроизводимости
-        self.x_opt = np.random.uniform(-4, 4, dimension)
-
-        # Случайная матрица вращения
-        self.rotation = self._generate_rotation_matrix(dimension)
-
-        # Генерация ограничений
-        self.constraints_linear = self._generate_linear_constraints()
-
-    def _generate_rotation_matrix(self, n: int) -> np.ndarray:
-        """Генерация случайной ортогональной матрицы."""
-        H = np.random.randn(n, n)
-        Q, _ = np.linalg.qr(H)
-        return Q
-
-    def _generate_linear_constraints(self) -> List[Tuple[np.ndarray, float]]:
-        """
-        Генерация линейных ограничений вида a^T x <= b.
-        """
-        constraints = []
-
-        for k in range(self.n_constraints):
-            # Случайный вектор нормали
-            a = np.random.randn(self.dimension)
-            a = a / (np.linalg.norm(a) + 1e-8)
-
-            # Случайное смещение
-            if k == 0:
-                # Первое ограничение активное в оптимуме
-                b = a @ self.x_opt
-            else:
-                # Остальные ограничения могут быть неактивными
-                b = a @ self.x_opt + np.random.uniform(0, 2)
-
-            constraints.append((a, b))
-
-        return constraints
-
-    def objective_sphere(self, x: np.ndarray) -> float:
-        """Сферическая функция."""
-        return np.sum((x - self.x_opt) ** 2)
-
-    def objective_ellipsoid(self, x: np.ndarray) -> float:
-        """Эллипсоидальная функция."""
-        z = x - self.x_opt
-        n = self.dimension
-        cond = 1e6
-        result = 0
-        for i in range(n):
-            result += cond ** (i / max(1, (n - 1))) * z[i] ** 2
-        return result
-
-    def objective_rastrigin(self, x: np.ndarray) -> float:
-        """Функция Растригина."""
-        z = x - self.x_opt
-        n = self.dimension
-        return 10 * n + np.sum(z**2 - 10 * np.cos(2 * np.pi * z))
-
-    def objective_linear(self, x: np.ndarray) -> float:
-        """Линейная функция."""
-        return np.sum(x - self.x_opt)
-
-    def objective_rotated_ellipsoid(self, x: np.ndarray) -> float:
-        """Вращенный эллипсоид."""
-        z = self.rotation @ (x - self.x_opt)
-        n = self.dimension
-        cond = 1e6
-        result = 0
-        for i in range(n):
-            result += cond ** (i / max(1, (n - 1))) * z[i] ** 2
-        return result
-
-    def objective_bent_cigar(self, x: np.ndarray) -> float:
-        """Bent Cigar функция."""
-        z = self.rotation @ (x - self.x_opt)
-        return z[0] ** 2 + 1e6 * np.sum(z[1:] ** 2)
-
-    def constraint_linear(self, x: np.ndarray, k: int) -> float:
-        """
-        Линейное ограничение номер k.
-        Возвращает g_k(x) = a^T x - b <= 0
-        """
-        a, b = self.constraints_linear[k]
-        return a @ x - b
-
-    def constraint_all(self, x: np.ndarray) -> float:
-        """
-        Агрегированное ограничение (максимум из всех).
-        """
-        max_g = -np.inf
-        for k in range(self.n_constraints):
-            g = self.constraint_linear(x, k)
-            max_g = max(max_g, g)
-        return max_g
-
-    def get_objective(self) -> Callable:
-        """Возвращает целевую функцию."""
-        objectives = {
-            "sphere": self.objective_sphere,
-            "ellipsoid": self.objective_ellipsoid,
-            "rastrigin": self.objective_rastrigin,
-            "linear": self.objective_linear,
-            "rotated_ellipsoid": self.objective_rotated_ellipsoid,
-            "bent_cigar": self.objective_bent_cigar,
-        }
-        return objectives.get(self.name, self.objective_sphere)
-
-    def get_constraint(self) -> Callable:
-        """Возвращает функцию ограничения."""
-        return self.constraint_all
-
-    def get_bounds(self) -> np.ndarray:
-        """Возвращает границы поиска [-5, 5]."""
-        bounds = np.array([[-5, 5]] * self.dimension)
-        return bounds
-
-    def get_feasible_starting_point(self) -> np.ndarray:
-        """
-        Возвращает допустимую начальную точку.
-        """
-        n_trials = 100
-        for _ in range(n_trials):
-            x = np.random.uniform(-4, 4, self.dimension)
-            if self.constraint_all(x) <= 0:
-                return x
-        return np.zeros(self.dimension)
-
-
-def create_test_problems() -> List[Dict]:
-    """
-    Создает набор тестовых задач для бенчмаркинга.
-
-    Returns
-    -------
-    List[Dict]
-        Список задач с полями: name, objective, constraint, bounds, dim
+    Возвращает:
+        Список из 10 задач OptimizationProblem
     """
     problems = []
 
-    # Задачи с разными целевыми функциями и количеством ограничений
-    test_configs = [
-        ("sphere", 1, 2),
-        ("sphere", 3, 2),
-        ("sphere", 1, 3),
-        ("ellipsoid", 1, 2),
-        ("ellipsoid", 3, 2),
-        ("rastrigin", 1, 2),
-        ("rastrigin", 3, 2),
-        ("linear", 1, 2),
-        ("rotated_ellipsoid", 1, 2),
-        ("bent_cigar", 1, 2),
-    ]
+    # Задача 1: Sphere с линейными ограничениями
+    problems.append(OptimizationProblem(
+        name="Sphere_Linear",
+        dim=2,
+        bounds=[(-5.0, 5.0), (-5.0, 5.0)],
+        objective=BBOBConstrainedProblems.sphere,
+        constraints=[
+            BBOBConstrainedProblems.linear_constraint_1,
+            BBOBConstrainedProblems.linear_constraint_2,
+        ],
+        optimal_value=0.125,
+        optimal_point=np.array([0.25, 0.25]),
+    ))
 
-    for name, n_cons, dim in test_configs:
-        problem = BBOBConstrainedProblem(name, n_cons, dimension=dim)
+    # Задача 2: Sphere с круговым ограничением
+    problems.append(OptimizationProblem(
+        name="Sphere_Circle",
+        dim=2,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.sphere,
+        constraints=[BBOBConstrainedProblems.circle_constraint],
+        optimal_value=0.0,
+        optimal_point=np.array([0.0, 0.0]),
+    ))
 
-        problems.append(
-            {
-                "name": f"{name}_c{n_cons}_d{dim}",
-                "objective": problem.get_objective(),
-                "constraint": problem.get_constraint(),
-                "bounds": problem.get_bounds(),
-                "dim": dim,
-                "x0": problem.get_feasible_starting_point(),
-            }
-        )
+    # Задача 3: Rosenbrock с круговым ограничением
+    problems.append(OptimizationProblem(
+        name="Rosenbrock_Circle",
+        dim=2,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.rosenbrock,
+        constraints=[BBOBConstrainedProblems.circle_constraint],
+        optimal_value=0.0,
+        optimal_point=np.array([1.0, 1.0]),
+    ))
+
+    # Задача 4: Rastrigin с круговым ограничением
+    problems.append(OptimizationProblem(
+        name="Rastrigin_Circle",
+        dim=2,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.rastrigin,
+        constraints=[BBOBConstrainedProblems.circle_constraint],
+        optimal_value=0.0,
+        optimal_point=np.array([0.0, 0.0]),
+    ))
+
+    # Задача 5: Booth с круговым ограничением
+    problems.append(OptimizationProblem(
+        name="Booth_Circle",
+        dim=2,
+        bounds=[(-4.0, 4.0), (-4.0, 4.0)],
+        objective=BBOBConstrainedProblems.booth,
+        constraints=[BBOBConstrainedProblems.circle_constraint],
+        optimal_value=0.0,
+        optimal_point=np.array([1.0, 3.0]),
+    ))
+
+    # Задача 6: Sphere с двумя кругами (пересечение)
+    problems.append(OptimizationProblem(
+        name="Sphere_TwoCircles",
+        dim=2,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.sphere,
+        constraints=[
+            BBOBConstrainedProblems.circle_constraint,
+            BBOBConstrainedProblems.circle_constraint_offset,
+        ],
+        optimal_value=0.0,
+        optimal_point=np.array([0.0, 0.0]),
+    ))
+
+    # Задача 7: Quadratic с линейными ограничениями
+    problems.append(OptimizationProblem(
+        name="Quadratic_Linear",
+        dim=2,
+        bounds=[(-5.0, 5.0), (-5.0, 5.0)],
+        objective=BBOBConstrainedProblems.quadratic,
+        constraints=[
+            BBOBConstrainedProblems.linear_constraint_1,
+            BBOBConstrainedProblems.linear_constraint_2,
+        ],
+        optimal_value=0.125,
+        optimal_point=np.array([0.25, 0.25]),
+    ))
+
+    # Задача 8: Sphere 3D с шаровым ограничением
+    problems.append(OptimizationProblem(
+        name="Sphere_3D",
+        dim=3,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.sphere,
+        constraints=[BBOBConstrainedProblems.circle_constraint_3d],
+        optimal_value=0.0,
+        optimal_point=np.array([0.0, 0.0, 0.0]),
+    ))
+
+    # Задача 9: Rosenbrock 3D с шаровым ограничением
+    problems.append(OptimizationProblem(
+        name="Rosenbrock_3D",
+        dim=3,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.rosenbrock,
+        constraints=[BBOBConstrainedProblems.circle_constraint_3d],
+        optimal_value=0.0,
+        optimal_point=np.array([1.0, 1.0, 1.0]),
+    ))
+
+    # Задача 10: Rastrigin 3D с шаровым ограничением
+    problems.append(OptimizationProblem(
+        name="Rastrigin_3D",
+        dim=3,
+        bounds=[(-2.0, 2.0), (-2.0, 2.0), (-2.0, 2.0)],
+        objective=BBOBConstrainedProblems.rastrigin,
+        constraints=[BBOBConstrainedProblems.circle_constraint_3d],
+        optimal_value=0.0,
+        optimal_point=np.array([0.0, 0.0, 0.0]),
+    ))
 
     return problems
+
+
+def get_problem_by_index(index: int) -> OptimizationProblem:
+    """
+    Получение задачи по индексу.
+
+    Параметры:
+        index: Индекс задачи (0-9)
+
+    Возвращает:
+        Задача OptimizationProblem
+
+    Исключения:
+        ValueError: если индекс вне диапазона
+    """
+    problems = create_bbob_problem_set()
+    if 0 <= index < len(problems):
+        return problems[index]
+    raise ValueError(f"Index {index} out of range. Available: 0-{len(problems)-1}")

@@ -1,102 +1,155 @@
-"""Реализация метода Penalty (штрафная функция)."""
+"""Penalty метод байесовской оптимизации.
 
-import math
+Преобразует ограниченную задачу в безусловную через штрафную функцию:
+F(x) = f(x) + ρ * Σ max(0, g_i(x))^2
+"""
+
+from typing import Optional
+
 import numpy as np
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
-from .base import BayesianOptimizationBase
+
+from src.bayesian_optimization.base import BaseBayesianOptimization
 
 
-class PenaltyBayesianOptimization(BayesianOptimizationBase):
-    """Байесовская оптимизация с квадратичной штрафной функцией."""
+class PenaltyBayesianOptimization(BaseBayesianOptimization):
+    """Байесовская оптимизация с использованием штрафного метода.
 
-    def __init__(self, penalty_coeff: float = 1e6, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.penalty_coeff = penalty_coeff
-        kernel = C(1.0, (1e-4, 1e1)) * RBF(1.0, (1e-4, 1e1)) + WhiteKernel(
-            1e-4, (1e-6, 1e-2)
-        )
-        self.gp = GaussianProcessRegressor(
-            kernel=kernel,
-            normalize_y=True,
-            random_state=42,
-            n_restarts_optimizer=10,
-        )
-        self._init_random_sample()
-        self._fit_gp()
+    Штрафная функция: F(x) = f(x) + ρ * Σ max(0, g_i(x))^2
+    Коэффициент штрафа ρ адаптивно увеличивается при нарушении ограничений.
 
-    def _penalized_objective(self, x: np.ndarray) -> float:
-        """Вычисляет значение штрафной функции."""
-        fx = self.objective(x)
-        penalty = 0.0
+    Атрибуты:
+        constraints: Список функций ограничений g_i(x) <= 0
+        penalty_coef: Текущий коэффициент штрафа ρ
+        penalty_coef_init: Начальный коэффициент штрафа
+        penalty_coef_growth: Множитель роста штрафа
+    """
+
+    def __init__(
+        self,
+        bounds: list[tuple[float, float]],
+        constraints: list,
+        n_init: int = 10,
+        kernel: str = "matern",
+        random_state: Optional[int] = None,
+        penalty_coef_init: float = 1.0,
+        penalty_coef_growth: float = 2.0,
+    ) -> None:
+        """Инициализация Penalty оптимизатора.
+
+        Аргументы:
+            bounds: Границы переменных [(min, max), ...]
+            constraints: Список функций ограничений (g_i(x) <= 0)
+            n_init: Размер начальной выборки
+            kernel: Тип ядра GP ('rbf' или 'matern')
+            random_state: Seed для случайных чисел
+            penalty_coef_init: Начальный коэффициент штрафа
+            penalty_coef_growth: Множитель роста штрафа
+        """
+        super().__init__(bounds, n_init, kernel, random_state)
+
+        self.constraints = constraints
+        self.penalty_coef = penalty_coef_init
+        self.penalty_coef_init = penalty_coef_init
+        self.penalty_coef_growth = penalty_coef_growth
+
+    def _compute_penalty(self, X: np.ndarray) -> np.ndarray:
+        """Вычисление штрафа для точек.
+
+        Штраф = Σ max(0, g_i(x))^2
+
+        Аргументы:
+            X: Точки для оценки (n_points, dim)
+
+        Возвращает:
+            Значения штрафа (n_points,)
+        """
+        X = X.reshape(-1, self.dim)
+        penalty = np.zeros(len(X))
+
+        for i, x in enumerate(X):
+            violation_sum = 0.0
+            for constraint in self.constraints:
+                g_val = float(constraint(x))
+                violation_sum += max(0, g_val) ** 2
+            penalty[i] = violation_sum
+
+        return penalty
+
+    def _penalized_objective(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
+        """Вычисление штрафной целевой функции.
+
+        F(x) = f(x) + ρ * штраф(x)
+
+        Аргументы:
+            X: Точки для оценки (n_points, dim)
+            y: Значения исходной функции (если None, используем self.y)
+
+        Возвращает:
+            Значения штрафной функции (n_points,)
+        """
+        penalty = self._compute_penalty(X)
+
+        if y is not None:
+            return y + self.penalty_coef * penalty
+
+        if self.y is not None and np.array_equal(X, self.X):
+            return self.y + self.penalty_coef * penalty
+
+        return penalty
+
+    def _acquisition_function(self, X: np.ndarray) -> np.ndarray:
+        """EI функция приобретения для штрафной задачи.
+
+        Аргументы:
+            X: Точки для оценки (n_points, dim)
+
+        Возвращает:
+            Значения EI (n_points,)
+        """
+        from scipy.stats import norm
+
+        X = X.reshape(-1, self.dim)
+
+        if self.y is None:
+            return np.zeros(len(X))
+
+        # Получаем штрафные значения для всех точек
+        penalized_y = self._penalized_objective(self.X, self.y)
+        f_min_penalized = np.min(penalized_y)
+
+        # Предсказания GP для штрафной функции
+        mu, sigma = self.gp.predict(X, return_std=True)
+        sigma = np.maximum(sigma, 1e-6)
+
+        gamma = (f_min_penalized - mu) / sigma
+        ei = (f_min_penalized - mu) * norm.cdf(gamma) + sigma * norm.pdf(gamma)
+
+        result = np.maximum(ei, 0)
+        if result.ndim == 0:
+            result = np.array([result])
+        return result
+
+    def update(self, X_new: np.ndarray, y_new: float) -> None:
+        """Обновление модели с адаптацией коэффициента штрафа.
+
+        Аргументы:
+            X_new: Новая точка (dim,)
+            y_new: Значение функции в новой точке
+        """
+        # Проверяем выполнение ограничений
+        is_feasible = True
         for constraint in self.constraints:
-            violation = max(0.0, constraint(x))
-            penalty += violation**2
-        return fx + self.penalty_coeff * penalty
+            if float(constraint(X_new)) > 0:
+                is_feasible = False
+                break
 
-    def _fit_gp(self) -> None:
-        """Обучает GP на штрафованных значениях."""
-        if len(self.X) < 2:
-            return
-        X_arr = np.array(self.X)
-        penalized_F = [self._penalized_objective(x) for x in self.X]
-        self.gp.fit(X_arr, penalized_F)
+        # Адаптивно увеличиваем штраф при нарушении ограничений
+        if not is_feasible:
+            self.penalty_coef *= self.penalty_coef_growth
 
-    def _acquisition(self, x: np.ndarray) -> float:
-        """Expected Improvement для штрафованной функции."""
-        x = x.reshape(1, -1)
-        mu, sigma = self.gp.predict(x, return_std=True)
-        mu = mu[0]
-        sigma = sigma[0]
+        # Вычисляем штрафное значение
+        penalty = self._compute_penalty(X_new.reshape(1, -1))[0]
+        penalized_y = y_new + self.penalty_coef * penalty
 
-        if sigma < 1e-12:
-            return 0.0
-
-        best_penalized = min(self._penalized_objective(xi) for xi in self.X)
-        gamma = (best_penalized - mu) / sigma
-        ei = (best_penalized - mu) * self._norm_cdf(gamma) + sigma * self._norm_pdf(
-            gamma
-        )
-        return ei
-
-    @staticmethod
-    def _norm_cdf(x: float) -> float:
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-    @staticmethod
-    def _norm_pdf(x: float) -> float:
-        return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
-
-    def iterate(self) -> None:
-        """Одна итерация оптимизации."""
-        if len(self.X) < 2:
-            self._init_random_sample()
-            self._fit_gp()
-            return
-
-        best_x = None
-        best_acq = -np.inf
-
-        for _ in range(20):
-            x_candidate = np.array(
-                [np.random.uniform(low, high) for low, high in self.bounds]
-            )
-            acq = self._acquisition(x_candidate)
-            if acq > best_acq:
-                best_acq = acq
-                best_x = x_candidate
-
-        if best_x is None:
-            best_x = np.array(
-                [np.random.uniform(low, high) for low, high in self.bounds]
-            )
-
-        fx_new = self.objective(best_x)
-        self.X.append(best_x)
-        self.F.append(fx_new)
-
-        if self._is_feasible(best_x) and fx_new < self.best_feasible_value:
-            self.best_feasible_value = fx_new
-            self.best_feasible_point = best_x.copy()
-
-        self._fit_gp()
+        # Обновляем GP с использованием штрафного значения
+        super().update(X_new, penalized_y)

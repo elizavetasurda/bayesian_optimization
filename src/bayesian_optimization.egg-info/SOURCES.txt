@@ -2,10 +2,12 @@ README.md
 pyproject.toml
 src/__init__.py
 src/bbob_wrapper.py
+src/cei.py
 src/constraint_handling.py
 src/experiment.py
 src/experimental_design.py
 src/optimizer.py
+src/penalty.py
 src/problems.py
 src/surrogate_model.py
 src/visualization.py
@@ -20,6 +22,8 @@ src/bayesian_optimization.egg-info/SOURCES.txt
 src/bayesian_optimization.egg-info/dependency_links.txt
 src/bayesian_optimization.egg-info/requires.txt
 src/bayesian_optimization.egg-info/top_level.txt
+src/experimental_design/__init__.py
+src/experimental_design/lhs.py
 src/test_problems/__init__.py
 src/test_problems/bbob_constrained.py
 src/test_problems/constrained_problems.py

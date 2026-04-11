@@ -1,28 +1,23 @@
 # Bayesian Optimization with Constraints
 
-[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Bayesian optimization with constraints using four different constraint handling methods:
+Байесовская оптимизация с ограничениями, реализующая четыре метода обработки ограничений:
 
-- **CEI** (Constrained Expected Improvement) - Probability of improvement × feasibility
-- **Penalty** - Penalty function method with adaptive coefficient
-- **Lagrange** - Augmented Lagrangian with multiplier updates  
-- **Barrier** - Interior point barrier method
+- **CEI** (Constrained Expected Improvement) - ожидаемое улучшение с учётом вероятности выполнения ограничений
+- **Penalty** - метод штрафных функций с адаптивным коэффициентом
+- **Lagrange** - метод модифицированной функции Лагранжа с обновлением множителей
+- **Barrier** - метод внутренней точки с логарифмическим барьером
 
-## Features
+##  Требования
 
-- ✅ Gaussian Process surrogate models
-- ✅ Latin Hypercube initial design
-- ✅ Multiple constraint handling methods
-- ✅ Support for bbob-constrained test suite (54 problems)
-- ✅ Automatic visualization of results
-- ✅ Python 3.13+ support
-- ✅ Complete type hints and docstrings
+- Python 3.14 или выше
+- uv (рекомендуемый менеджер пакетов)
 
-## Installation
+##  Установка
 
-### Using uv (recommended)
+### Используя uv (рекомендуется)
 
 ```bash
 git clone https://github.com/elizavetasurda/bayesian_optimization.git

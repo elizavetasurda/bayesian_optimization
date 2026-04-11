@@ -1,10 +1,12 @@
 __init__
 bayesian_optimization
 bbob_wrapper
+cei
 constraint_handling
 experiment
 experimental_design
 optimizer
+penalty
 problems
 surrogate_model
 test_problems

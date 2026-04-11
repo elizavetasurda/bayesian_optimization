@@ -1,97 +1,176 @@
-"""Реализация метода Lagrange (множители Лагранжа с GP)."""
+"""Lagrange (Augmented Lagrangian) метод байесовской оптимизации.
 
-import math
+Использует модифицированную функцию Лагранжа с квадратичным штрафом:
+L(x, λ, ρ) = f(x) + Σ λ_i * max(0, g_i(x)) + (ρ/2) * Σ max(0, g_i(x))^2
+"""
+
+from typing import Optional
+
 import numpy as np
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
-from .base import BayesianOptimizationBase
+
+from src.bayesian_optimization.base import BaseBayesianOptimization
 
 
-class LagrangeBayesianOptimization(BayesianOptimizationBase):
-    """Байесовская оптимизация с лагранжевой функцией."""
+class LagrangeBayesianOptimization(BaseBayesianOptimization):
+    """Байесовская оптимизация с использованием Augmented Lagrangian.
 
-    def __init__(self, lagrange_lambda: float = 100.0, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.lagrange_lambda = lagrange_lambda
-        kernel = C(1.0, (1e-4, 1e1)) * RBF(1.0, (1e-4, 1e1)) + WhiteKernel(
-            1e-4, (1e-6, 1e-2)
-        )
-        self.gp = GaussianProcessRegressor(
-            kernel=kernel,
-            normalize_y=True,
-            random_state=42,
-            n_restarts_optimizer=10,
-        )
-        self._init_random_sample()
-        self._fit_gp()
+    Метод адаптивно обновляет множители Лагранжа λ_i и штрафной коэффициент ρ.
 
-    def _lagrangian(self, x: np.ndarray) -> float:
-        """Вычисляет лагранжиан: f(x) + lambda * sum(max(0, g_i(x)))."""
-        fx = self.objective(x)
-        penalty = 0.0
-        for constraint in self.constraints:
-            penalty += max(0.0, constraint(x))
-        return fx + self.lagrange_lambda * penalty
+    Атрибуты:
+        constraints: Список функций ограничений g_i(x) <= 0
+        multipliers: Множители Лагранжа λ_i
+        penalty_coef: Штрафной коэффициент ρ
+        penalty_coef_growth: Множитель роста штрафа
+        constraint_tolerance: Допуск по ограничениям
+    """
 
-    def _fit_gp(self) -> None:
-        if len(self.X) < 2:
-            return
-        X_arr = np.array(self.X)
-        lagrangian_F = [self._lagrangian(x) for x in self.X]
-        self.gp.fit(X_arr, lagrangian_F)
+    def __init__(
+        self,
+        bounds: list[tuple[float, float]],
+        constraints: list,
+        n_init: int = 10,
+        kernel: str = "matern",
+        random_state: Optional[int] = None,
+        penalty_coef_init: float = 1.0,
+        penalty_coef_growth: float = 2.0,
+        constraint_tolerance: float = 1e-4,
+    ) -> None:
+        """Инициализация Lagrange оптимизатора.
 
-    def _acquisition(self, x: np.ndarray) -> float:
-        x = x.reshape(1, -1)
-        mu, sigma = self.gp.predict(x, return_std=True)
-        mu = mu[0]
-        sigma = sigma[0]
+        Аргументы:
+            bounds: Границы переменных [(min, max), ...]
+            constraints: Список функций ограничений (g_i(x) <= 0)
+            n_init: Размер начальной выборки
+            kernel: Тип ядра GP ('rbf' или 'matern')
+            random_state: Seed для случайных чисел
+            penalty_coef_init: Начальный штрафной коэффициент
+            penalty_coef_growth: Множитель роста штрафа
+            constraint_tolerance: Допуск по ограничениям
+        """
+        super().__init__(bounds, n_init, kernel, random_state)
 
-        if sigma < 1e-12:
-            return 0.0
+        self.constraints = constraints
+        self.n_constraints = len(constraints)
+        self.multipliers = np.zeros(self.n_constraints)
+        self.penalty_coef = penalty_coef_init
+        self.penalty_coef_init = penalty_coef_init
+        self.penalty_coef_growth = penalty_coef_growth
+        self.constraint_tolerance = constraint_tolerance
 
-        best_lagrangian = min(self._lagrangian(xi) for xi in self.X)
-        gamma = (best_lagrangian - mu) / sigma
-        return (best_lagrangian - mu) * self._norm_cdf(gamma) + sigma * self._norm_pdf(
-            gamma
-        )
+    def _compute_constraint_violations(self, X: np.ndarray) -> np.ndarray:
+        """Вычисление нарушений ограничений.
 
-    @staticmethod
-    def _norm_cdf(x: float) -> float:
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+        Аргументы:
+            X: Точки для оценки (n_points, dim)
 
-    @staticmethod
-    def _norm_pdf(x: float) -> float:
-        return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+        Возвращает:
+            Массив нарушений (n_points, n_constraints)
+        """
+        X = X.reshape(-1, self.dim)
+        violations = np.zeros((len(X), self.n_constraints))
 
-    def iterate(self) -> None:
-        if len(self.X) < 2:
-            self._init_random_sample()
-            self._fit_gp()
-            return
+        for i, x in enumerate(X):
+            for j, constraint in enumerate(self.constraints):
+                g_val = float(constraint(x))
+                violations[i, j] = max(0, g_val)
 
-        best_x = None
-        best_acq = -np.inf
+        return violations
 
-        for _ in range(20):
-            x_candidate = np.array(
-                [np.random.uniform(low, high) for low, high in self.bounds]
-            )
-            acq = self._acquisition(x_candidate)
-            if acq > best_acq:
-                best_acq = acq
-                best_x = x_candidate
+    def _augmented_lagrangian(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
+        """Вычисление Augmented Lagrangian функции.
 
-        if best_x is None:
-            best_x = np.array(
-                [np.random.uniform(low, high) for low, high in self.bounds]
-            )
+        L(x) = f(x) + Σ λ_i * max(0, g_i(x)) + (ρ/2) * Σ max(0, g_i(x))^2
 
-        fx_new = self.objective(best_x)
-        self.X.append(best_x)
-        self.F.append(fx_new)
+        Аргументы:
+            X: Точки для оценки (n_points, dim)
+            y: Значения исходной функции (если None, используем self.y)
 
-        if self._is_feasible(best_x) and fx_new < self.best_feasible_value:
-            self.best_feasible_value = fx_new
-            self.best_feasible_point = best_x.copy()
+        Возвращает:
+            Значения Augmented Lagrangian (n_points,)
+        """
+        violations = self._compute_constraint_violations(X)
 
-        self._fit_gp()
+        if y is not None:
+            lagrangian = y.copy()
+        elif self.y is not None and np.array_equal(X, self.X):
+            lagrangian = self.y.copy()
+        else:
+            lagrangian = np.zeros(len(X))
+
+        # Добавляем вклад ограничений
+        for j in range(self.n_constraints):
+            v_j = violations[:, j]
+            lagrangian += self.multipliers[j] * v_j + 0.5 * self.penalty_coef * (v_j ** 2)
+
+        return lagrangian
+
+    def _update_multipliers(self, violations: np.ndarray) -> None:
+        """Обновление множителей Лагранжа.
+
+        λ_i_new = max(0, λ_i + ρ * g_i(x))
+
+        Аргументы:
+            violations: Нарушения ограничений для текущей точки
+        """
+        for j in range(self.n_constraints):
+            self.multipliers[j] = max(0.0, self.multipliers[j] + self.penalty_coef * violations[j])
+
+    def _acquisition_function(self, X: np.ndarray) -> np.ndarray:
+        """EI функция приобретения для Augmented Lagrangian.
+
+        Аргументы:
+            X: Точки для оценки (n_points, dim)
+
+        Возвращает:
+            Значения EI (n_points,)
+        """
+        from scipy.stats import norm
+
+        X = X.reshape(-1, self.dim)
+
+        if self.y is None or self.X is None:
+            return np.zeros(len(X))
+
+        # Вычисляем Lagrangian для имеющихся точек
+        lagrangian_values = self._augmented_lagrangian(self.X)
+        f_min_lagrangian = np.min(lagrangian_values)
+
+        # Для новых точек предсказываем Lagrangian
+        mu, sigma = self.gp.predict(X, return_std=True)
+        sigma = np.maximum(sigma, 1e-6)
+
+        gamma = (f_min_lagrangian - mu) / sigma
+        ei = (f_min_lagrangian - mu) * norm.cdf(gamma) + sigma * norm.pdf(gamma)
+
+        result = np.maximum(ei, 0)
+        if result.ndim == 0:
+            result = np.array([result])
+        return result
+
+    def update(self, X_new: np.ndarray, y_new: float) -> None:
+        """Обновление модели с обновлением множителей Лагранжа.
+
+        Аргументы:
+            X_new: Новая точка (dim,)
+            y_new: Значение функции в новой точке
+        """
+        # Вычисляем нарушения для новой точки
+        violations = self._compute_constraint_violations(X_new.reshape(1, -1))[0]
+
+        # Обновляем множители Лагранжа
+        self._update_multipliers(violations)
+
+        # Проверяем необходимость увеличения штрафа
+        max_violation = np.max(violations)
+        if max_violation > self.constraint_tolerance:
+            self.penalty_coef *= self.penalty_coef_growth
+
+        # Вычисляем значение Augmented Lagrangian
+        lagrangian_value = y_new
+        for j, constraint in enumerate(self.constraints):
+            g_val = float(constraint(X_new))
+            v_j = max(0, g_val)
+            lagrangian_value += self.multipliers[j] * v_j + 0.5 * self.penalty_coef * (v_j ** 2)
+
+        # Обновляем GP с использованием Lagrangian
+        super().update(X_new, lagrangian_value)

@@ -1,198 +1,257 @@
+"""Модуль для запуска экспериментов по байесовской оптимизации.
+
+Содержит функции для проведения полных экспериментов:
+- Многократные прогоны (trials) для усреднения результатов
+- Сравнение различных методов (CEI, Penalty, Lagrange, Barrier)
+- Сбор статистики по времени и сходимости
 """
-Experiment runner for comparing constraint handling methods.
-"""
+
+import time
+from typing import Any
 
 import numpy as np
-from typing import List, Dict, Optional
-from pathlib import Path
-import json
 
-from .problems import Sphere, Rosenbrock, Ackley, make_constrained_problem
-from .optimizer import BayesianOptimization
+from src.bayesian_optimization import (
+    CEIBayesianOptimization,
+    PenaltyBayesianOptimization,
+    LagrangeBayesianOptimization,
+    BarrierBayesianOptimization,
+)
+from src.experimental_design.lhs import lhs_initialize
+from src.utils.types import OptimizationProblem, TrialResult
+
+
+def evaluate_point(
+    x: np.ndarray,
+    problem: OptimizationProblem,
+) -> tuple[float, list[float]]:
+    """
+    Вычисление целевой функции и ограничений в точке.
+
+    Аргументы:
+        x: Точка для оценки
+        problem: Задача оптимизации
+
+    Возвращает:
+        Кортеж (значение функции, список значений ограничений)
+    """
+    obj_value = problem.objective(x)
+    constraint_values = [c(x) for c in problem.constraints]
+    return obj_value, constraint_values
+
+
+def is_feasible(
+    constraint_values: list[float],
+    tolerance: float = 1e-6,
+) -> bool:
+    """
+    Проверка выполнения всех ограничений.
+
+    Аргументы:
+        constraint_values: Список значений ограничений g_i(x)
+        tolerance: Допуск (g_i(x) <= tolerance)
+
+    Возвращает:
+        True если все ограничения выполнены
+    """
+    return all(g <= tolerance for g in constraint_values)
+
+
+def run_single_trial(
+    problem: OptimizationProblem,
+    method_name: str,
+    n_init: int,
+    n_iter: int,
+    random_state: int,
+) -> TrialResult:
+    """
+    Запуск одного прогона (trial) оптимизации.
+
+    Аргументы:
+        problem: Задача оптимизации
+        method_name: Название метода ('CEI', 'Penalty', 'Lagrange', 'Barrier')
+        n_init: Размер начальной выборки
+        n_iter: Количество итераций оптимизации
+        random_state: Seed для воспроизводимости
+
+    Возвращает:
+        TrialResult с результатами прогона
+    """
+    np.random.seed(random_state)
+
+    # Создаём начальную выборку методом LHS
+    X_init = lhs_initialize(problem.bounds, n_init, random_state)
+
+    # Вычисляем значения функции и ограничений для начальных точек
+    y_init = []
+    constraint_values_list = []
+
+    for x in X_init:
+        y_val, c_vals = evaluate_point(x, problem)
+        y_init.append(y_val)
+        constraint_values_list.append(c_vals)
+
+    y_init = np.array(y_init)
+
+    # Выбираем и инициализируем метод
+    if method_name == "CEI":
+        optimizer = CEIBayesianOptimization(
+            bounds=problem.bounds,
+            constraints=problem.constraints,
+            n_init=n_init,
+            kernel="matern",
+            random_state=random_state,
+        )
+    elif method_name == "Penalty":
+        optimizer = PenaltyBayesianOptimization(
+            bounds=problem.bounds,
+            constraints=problem.constraints,
+            n_init=n_init,
+            kernel="matern",
+            random_state=random_state,
+            penalty_coef_init=1.0,
+            penalty_coef_growth=2.0,
+        )
+    elif method_name == "Lagrange":
+        optimizer = LagrangeBayesianOptimization(
+            bounds=problem.bounds,
+            constraints=problem.constraints,
+            n_init=n_init,
+            kernel="matern",
+            random_state=random_state,
+            penalty_coef_init=1.0,
+            penalty_coef_growth=2.0,
+        )
+    elif method_name == "Barrier":
+        optimizer = BarrierBayesianOptimization(
+            bounds=problem.bounds,
+            constraints=problem.constraints,
+            n_init=n_init,
+            kernel="matern",
+            random_state=random_state,
+            barrier_mu_init=1.0,
+            mu_reduction_factor=0.5,
+        )
+    else:
+        raise ValueError(f"Неизвестный метод: {method_name}")
+
+    # Инициализируем оптимизатор
+    optimizer.initialize(X_init, y_init)
+
+    # История лучших значений
+    best_values_history = []
+
+    # Находим лучшее начальное значение
+    best_value = np.min(y_init)
+    best_values_history.append(best_value)
+
+    start_time = time.time()
+
+    # Основной цикл оптимизации
+    for _ in range(n_iter):
+        # Предлагаем следующую точку
+        x_next = optimizer.suggest_next_point()
+
+        # Вычисляем значение функции
+        y_next, _ = evaluate_point(x_next, problem)
+
+        # Обновляем оптимизатор
+        optimizer.update(x_next, y_next)
+
+        # Обновляем лучшее значение
+        current_best = optimizer.get_best_point()[1]
+        if current_best is not None:
+            best_value = min(best_value, current_best)
+        best_values_history.append(best_value)
+
+    elapsed_time = time.time() - start_time
+
+    # Получаем финальную лучшую точку
+    final_point, final_value = optimizer.get_best_point()
+    if final_point is None:
+        final_point = X_init[0]
+        final_value = y_init[0]
+
+    return TrialResult(
+        best_values=best_values_history,
+        time=elapsed_time,
+        final_point=final_point,
+        feasibility=is_feasible([c(final_point) for c in problem.constraints]),
+    )
 
 
 def run_experiments(
-    dimension: int = 2,
-    n_trials: int = 3,
-    n_initial: int = 10,
-    n_iterations: int = 50,
-    methods: List[str] = None,
-    use_coco: bool = True,
-) -> Dict:
+    problems: list[OptimizationProblem],
+    n_trials: int,
+    n_init: int,
+    n_iter: int,
+) -> dict[str, dict[str, dict[str, Any]]]:
     """
-    Run experiments comparing constraint handling methods.
+    Запуск полного эксперимента на наборе задач.
 
-    Parameters
-    ----------
-    dimension : int
-        Problem dimension.
-    n_trials : int
-        Number of independent trials per problem/method.
-    n_initial : int
-        Initial design size.
-    n_iterations : int
-        Number of BO iterations.
-    methods : list
-        Constraint handling methods to compare.
-    use_coco : bool
-        Whether to use COCO bbob-constrained problems.
+    Аргументы:
+        problems: Список задач для тестирования
+        n_trials: Количество повторений для усреднения
+        n_init: Размер начальной выборки
+        n_iter: Количество итераций оптимизации
 
-    Returns
-    -------
-    dict
-        Results dictionary.
+    Возвращает:
+        Словарь результатов:
+        {
+            "problem_name": {
+                "CEI": {"best_values": np.ndarray, "times": np.ndarray, ...},
+                "Penalty": {...},
+                ...
+            }
+        }
     """
-    if methods is None:
-        methods = ["CEI", "Penalty", "Lagrange", "Barrier"]
+    methods = ["CEI", "Penalty", "Lagrange", "Barrier"]
+    all_results = {}
 
-    # Define test problems
-    problems = []
-    problem_names = []
+    for prob_idx, problem in enumerate(problems):
+        print(f"\n Обработка задачи {prob_idx + 1}/{len(problems)}: {problem.name}")
 
-    # Built-in problems
-    problems.append(Sphere(dim=dimension))
-    problem_names.append("Sphere")
-
-    problems.append(Rosenbrock(dim=dimension))
-    problem_names.append("Rosenbrock")
-
-    problems.append(Ackley(dim=dimension))
-    problem_names.append("Ackley")
-
-    # Try to add COCO problems
-    if use_coco:
-        try:
-            from .bbob_wrapper import BBOBSuite
-
-            coco_suite = BBOBSuite(dimension=dimension, instances=[1])
-
-            # Add first 3 COCO problems for time reasons
-            for i, prob_desc in enumerate(coco_suite.problems[:3]):
-                # Create wrapper
-                class COCOProblemWrapper:
-                    def __init__(self, suite, prob_desc):
-                        self.suite = suite
-                        self.prob_desc = prob_desc
-                        self.dim = prob_desc.dimension
-                        self.bounds = prob_desc.bounds
-                        self.has_constraints = True
-
-                    def objective(self, x):
-                        f, _ = self.suite.evaluate(self.prob_desc, x)
-                        return f
-
-                    def constraints(self, x):
-                        _, g = self.suite.evaluate(self.prob_desc, x)
-                        return g
-
-                    def evaluate(self, x):
-                        return self.suite.evaluate(self.prob_desc, x)
-
-                    def is_feasible(self, x, tol=1e-8):
-                        g = self.constraints(x)
-                        return np.all(g <= tol)
-
-                wrapped = COCOProblemWrapper(coco_suite, prob_desc)
-                problems.append(wrapped)
-                problem_names.append(prob_desc.function_name)
-        except Exception as e:
-            print(f"Warning: Could not load COCO problems: {e}")
-            print("Using only built-in problems.")
-
-    results = {
-        "config": {
-            "dimension": dimension,
-            "n_trials": n_trials,
-            "n_initial": n_initial,
-            "n_iterations": n_iterations,
-            "methods": methods,
-        },
-        "problems": {},
-    }
-
-    for prob, prob_name in zip(problems, problem_names):
-        print(f"\n{'='*60}")
-        print(f"Problem: {prob_name}")
-        print(f"{'='*60}")
-
-        prob_results = {}
+        problem_results = {}
 
         for method in methods:
-            print(f"\n--- Method: {method} ---")
+            print(f"   Метод: {method}...", end=" ", flush=True)
 
-            trial_results = []
+            # Запускаем многократные прогоны
+            all_best_values = []
+            all_times = []
+            all_final_points = []
+
             for trial in range(n_trials):
-                print(f"  Trial {trial+1}/{n_trials}...", end=" ")
+                random_state = 42 + prob_idx * 100 + trial * 10
 
-                # Run optimization
-                optimizer = BayesianOptimization(
-                    problem=prob,
-                    method=method,
-                    n_initial=n_initial,
-                    n_iterations=n_iterations,
-                    random_seed=42 + trial,
+                trial_result = run_single_trial(
+                    problem=problem,
+                    method_name=method,
+                    n_init=n_init,
+                    n_iter=n_iter,
+                    random_state=random_state,
                 )
 
-                result = optimizer.optimize(verbose=False)
-                trial_results.append(result)
+                all_best_values.append(trial_result.best_values)
+                all_times.append(trial_result.time)
+                all_final_points.append(trial_result.final_point)
 
-                print(
-                    f"best={result.best_objective:.4f}, feasible={result.is_feasible}"
-                )
+            # Усредняем результаты по прогонам
+            best_values_matrix = np.array(all_best_values)  # (n_trials, n_iter+1)
 
-            # Aggregate results
-            best_values = [r.best_objective for r in trial_results if r.is_feasible]
-            if best_values:
-                mean_best = np.mean(best_values)
-                std_best = np.std(best_values)
-                success_rate = len(best_values) / n_trials
-            else:
-                mean_best = np.inf
-                std_best = 0
-                success_rate = 0
-
-            prob_results[method] = {
-                "mean_best": mean_best,
-                "std_best": std_best,
-                "success_rate": success_rate,
-                "trials": [
-                    {
-                        "best": r.best_objective,
-                        "feasible": r.is_feasible,
-                        "n_evals": r.n_evaluations,
-                        "time": r.wall_time,
-                    }
-                    for r in trial_results
-                ],
-                "history": [[h["best_f"] for h in r.history] for r in trial_results],
+            problem_results[method] = {
+                "best_values": best_values_matrix,
+                "times": np.array(all_times),
+                "final_points": all_final_points,
+                "mean_best": np.mean(best_values_matrix, axis=0),
+                "std_best": np.std(best_values_matrix, axis=0),
+                "median_best": np.median(best_values_matrix, axis=0),
+                "mean_time": np.mean(all_times),
+                "std_time": np.std(all_times),
             }
 
-            print(
-                f"  Mean best: {mean_best:.4f} ± {std_best:.4f}, Success: {success_rate:.0%}"
-            )
+            print(f"готово (среднее время: {np.mean(all_times):.2f}с)")
 
-        results["problems"][prob_name] = prob_results
+        all_results[problem.name] = problem_results
 
-    # Save results to file
-    output_file = Path("results.txt")
-    with open(output_file, "w") as f:
-        f.write("Bayesian Optimization with Constraints - Results\n")
-        f.write("=" * 60 + "\n\n")
-        f.write(f"Dimension: {dimension}\n")
-        f.write(f"Trials per problem: {n_trials}\n")
-        f.write(f"Initial points: {n_initial}\n")
-        f.write(f"BO iterations: {n_iterations}\n\n")
-
-        for prob_name, prob_res in results["problems"].items():
-            f.write(f"\n{prob_name}\n")
-            f.write("-" * 40 + "\n")
-            for method, res in prob_res.items():
-                f.write(f"  {method}:\n")
-                f.write(f"    Mean best: {res['mean_best']:.6f}\n")
-                f.write(f"    Std: {res['std_best']:.6f}\n")
-                f.write(f"    Success rate: {res['success_rate']:.0%}\n")
-            f.write("\n")
-
-    print(f"\n✓ Results saved to {output_file}")
-
-    return results
+    return all_results
