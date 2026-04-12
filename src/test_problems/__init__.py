@@ -1,13 +1,5 @@
-"""Test problems for constrained optimization."""
+"""Модуль планирования эксперимента."""
 
-from src.test_problems.bbob_constrained import (
-    BBOBConstrainedProblems,
-    create_bbob_problem_set,
-    get_problem_by_index,
-)
+from src.experimental_design.lhs import latin_hypercube_sample
 
-__all__ = [
-    "BBOBConstrainedProblems",
-    "create_bbob_problem_set",
-    "get_problem_by_index",
-]
+__all__ = ['latin_hypercube_sample']

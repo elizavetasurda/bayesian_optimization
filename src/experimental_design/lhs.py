@@ -1,100 +1,69 @@
-"""Модуль для латинского гиперкубического планирования эксперимента (LHS).
-
-LHS обеспечивает равномерное покрытие пространства параметров
-при ограниченном количестве начальных точек.
-"""
+"""Модуль с методами планирования эксперимента."""
 
 import numpy as np
 
 
-def latin_hypercube_sample(
-    bounds: list[tuple[float, float]],
-    n_samples: int,
-    random_state: int | None = None,
-) -> np.ndarray:
+def latin_hypercube_sample(bounds, n_samples, random_state=None):
     """
     Генерация выборки методом латинского гиперкуба.
-
-    Алгоритм:
-    1. Каждый диапазон переменной делится на n_samples интервалов
-    2. В каждом интервале выбирается случайная точка
-    3. Порядок интервалов случайно перемешивается для каждой переменной
-
+    
     Аргументы:
-        bounds: Список границ для каждой переменной [(min, max), ...]
-        n_samples: Количество точек выборки
-        random_state: Seed для генератора случайных чисел
-
-    Возвращает:
-        Массив точек размера (n_samples, n_dim)
-
-    Пример:
-        >>> bounds = [(0, 1), (0, 1)]
-        >>> samples = latin_hypercube_sample(bounds, 10)
-        >>> samples.shape
-        (10, 2)
+        bounds: границы переменных, форма (n_dims, 2)
+        n_samples: количество точек
+        random_state: seed для воспроизводимости
+    
+    Returns:
+        массив точек формы (n_samples, n_dims)
     """
     if random_state is not None:
         np.random.seed(random_state)
-
-    n_dim = len(bounds)
-    samples = np.zeros((n_samples, n_dim))
-
-    for i, (low, high) in enumerate(bounds):
-        # Делим диапазон на n_samples равных интервалов
-        edges = np.linspace(low, high, n_samples + 1)
-
-        # Выбираем случайную точку в каждом интервале
-        points = np.random.uniform(edges[:-1], edges[1:])
-
-        # Перемешиваем для случайного порядка
-        samples[:, i] = np.random.permutation(points)
-
+    
+    n_dims = bounds.shape[0]
+    samples = np.zeros((n_samples, n_dims))
+    
+    for i in range(n_dims):
+        seg_size = (bounds[i, 1] - bounds[i, 0]) / n_samples
+        points = bounds[i, 0] + seg_size * (np.random.random(n_samples) + np.arange(n_samples))
+        np.random.shuffle(points)
+        samples[:, i] = points
+    
     return samples
 
 
-def random_sample(
-    bounds: list[tuple[float, float]],
-    n_samples: int,
-    random_state: int | None = None,
-) -> np.ndarray:
+def random_sample(bounds, n_samples, random_state=None):
     """
-    Генерация случайной выборки (равномерное распределение).
-
+    Генерация случайной выборки.
+    
     Аргументы:
-        bounds: Список границ для каждой переменной [(min, max), ...]
-        n_samples: Количество точек выборки
-        random_state: Seed для генератора случайных чисел
-
-    Возвращает:
-        Массив точек размера (n_samples, n_dim)
+        bounds: границы переменных, форма (n_dims, 2)
+        n_samples: количество точек
+        random_state: seed для воспроизводимости
+    
+    Returns:
+        массив точек формы (n_samples, n_dims)
     """
     if random_state is not None:
         np.random.seed(random_state)
-
-    n_dim = len(bounds)
-    samples = np.zeros((n_samples, n_dim))
-
-    for i, (low, high) in enumerate(bounds):
-        samples[:, i] = np.random.uniform(low, high, n_samples)
-
+    
+    n_dims = bounds.shape[0]
+    samples = np.zeros((n_samples, n_dims))
+    
+    for i in range(n_dims):
+        samples[:, i] = np.random.uniform(bounds[i, 0], bounds[i, 1], n_samples)
+    
     return samples
 
 
-def lhs_initialize(
-    problem_bounds: list[tuple[float, float]],
-    n_points: int,
-    random_state: int | None = None,
-) -> np.ndarray:
+def lhs_initialize(bounds, n_samples, random_state=None):
     """
-    Удобная обёртка для LHS-инициализации оптимизации.
-
+    Инициализация выборки методом LHS (синоним latin_hypercube_sample).
+    
     Аргументы:
-        problem_bounds: Границы задачи [(min, max), ...]
-        n_points: Количество начальных точек
-        random_state: Seed для случайных чисел
-
-    Возвращает:
-        Массив начальных точек размера (n_points, n_dim)
+        bounds: границы переменных, форма (n_dims, 2)
+        n_samples: количество точек
+        random_state: seed для воспроизводимости
+    
+    Returns:
+        массив точек формы (n_samples, n_dims)
     """
-    return latin_hypercube_sample(problem_bounds, n_points, random_state)
+    return latin_hypercube_sample(bounds, n_samples, random_state)

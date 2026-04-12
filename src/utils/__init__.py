@@ -1,15 +1,10 @@
-"""Utility modules for experiment management and results processing."""
+"""Модуль с утилитами для экспериментов."""
 
-from src.utils.types import (
-    OptimizationProblem,
-    ExperimentResult,
-    TrialResult,
-    MethodResults,
-)
+from src.utils.experiment import run_bbob_experiment, run_comprehensive_experiment
+from src.utils.types import OptimizationResult
 
 __all__ = [
-    "OptimizationProblem",
-    "ExperimentResult",
-    "TrialResult",
-    "MethodResults",
+    'run_bbob_experiment',
+    'run_comprehensive_experiment',
+    'OptimizationResult',
 ]

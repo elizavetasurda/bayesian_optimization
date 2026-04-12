@@ -1,13 +1,32 @@
-"""Bayesian optimization methods with constraints handling."""
+"""
+Модуль с ядром байесовской оптимизации.
 
-from src.bayesian_optimization.barrier import BarrierBayesianOptimization
-from src.bayesian_optimization.cei import CEIBayesianOptimization
-from src.bayesian_optimization.lagrange import LagrangeBayesianOptimization
-from src.bayesian_optimization.penalty import PenaltyBayesianOptimization
+Содержит базовый оптимизатор и различные методы обработки ограничений:
+- Barrier method (барьерный метод)
+- Lagrange method (метод множителей Лагранжа)
+- Penalty method (метод штрафных функций)
+- CEI (Constrained Expected Improvement)
+
+Пример использования:
+    from core import BayesianOptimizer, PenaltyMethod
+    
+    optimizer = BayesianOptimizer(
+        objective_function=func,
+        bounds=bounds,
+        constraint_handler=PenaltyMethod(penalty_coeff=100)
+    )
+"""
+
+from .base import BayesianOptimizer
+from .barrier import BarrierMethod
+from .lagrange import LagrangeMethod
+from .penalty import PenaltyMethod
+from .cei import ConstrainedExpectedImprovement
 
 __all__ = [
-    "CEIBayesianOptimization",
-    "PenaltyBayesianOptimization",
-    "LagrangeBayesianOptimization",
-    "BarrierBayesianOptimization",
+    'BayesianOptimizer',
+    'BarrierMethod',
+    'LagrangeMethod',
+    'PenaltyMethod',
+    'ConstrainedExpectedImprovement',
 ]

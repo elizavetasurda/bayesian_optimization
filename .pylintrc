@@ -1,22 +1,24 @@
 [MASTER]
-ignore=venv,.venv,results,build,dist
-ignore-patterns=__pycache__,*.pyc
+ignore=__pycache__
+ignore-patterns=test_.*?py
 
 [MESSAGES CONTROL]
+# Отключаем warnings, которые не критичны для нашего проекта
 disable=
-    missing-docstring,
-    too-many-arguments,
-    too-many-instance-attributes,
-    too-many-locals,
-    too-many-branches,
-    invalid-name,
-    duplicate-code,
-    too-few-public-methods
+    C0114,  # missing-module-docstring
+    C0115,  # missing-class-docstring
+    C0116,  # missing-function-docstring
+    R0903,  # too-few-public-methods
+    R0801,  # duplicate-code
+    R0913,  # too-many-arguments
 
 [FORMAT]
 max-line-length=88
-indent-string="    "
 
 [BASIC]
-good-names=i,j,k,x,y,X,Y,f,ax,fig,dim,n,gp
-bad-names=foo,bar,baz
+good-names=i,j,k,x,y,z,_,f,df,ax,id
+
+[DESIGN]
+max-args=10
+max-locals=20
+max-attributes=15

@@ -1,194 +1,108 @@
-"""CEI (Constrained Expected Improvement) метод байесовской оптимизации.
+"""
+Constrained Expected Improvement (CEI) acquisition функция.
 
-CEI учитывает ограничения через вероятность их выполнения:
-CEI(x) = EI(x) * P(выполнения ограничений)
+Реализует acquisition функцию, учитывающую как улучшение целевой функции,
+так и вероятность соблюдения ограничений:
+    CEI(x) = EI(x) * P(g(x) <= 0)
+
+Автор: Elizaveta Surda
+Дата: 2026
 """
 
-from typing import Optional
-
 import numpy as np
-from scipy.stats import norm
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, RBF, WhiteKernel
-
-from src.bayesian_optimization.base import BaseBayesianOptimization
+from typing import List, Callable
+from src.bayesian_optimization.base import ConstraintHandler
 
 
-class CEIBayesianOptimization(BaseBayesianOptimization):
-    """Байесовская оптимизация с использованием CEI (Constrained Expected Improvement).
-
-    CEI модифицирует стандартный Expected Improvement, умножая его на
-    вероятность выполнения всех ограничений.
-
-    Атрибуты:
-        constraints: Список функций ограничений g_i(x) <= 0
-        n_constraints: Количество ограничений
-        constraint_gps: Список GP моделей для каждого ограничения
-        constraint_values: Значения ограничений для всех точек
+class ConstrainedExpectedImprovement(ConstraintHandler):
     """
-
-    def __init__(
-        self,
-        bounds: list[tuple[float, float]],
-        constraints: list,
-        n_init: int = 10,
-        kernel: str = "matern",
-        random_state: Optional[int] = None,
-    ) -> None:
-        """Инициализация CEI оптимизатора.
-
-        Аргументы:
-            bounds: Границы переменных [(min, max), ...]
-            constraints: Список функций ограничений (g_i(x) <= 0)
-            n_init: Размер начальной выборки
-            kernel: Тип ядра GP ('rbf' или 'matern')
-            random_state: Seed для случайных чисел
+    Constrained Expected Improvement acquisition функция.
+    
+    CEI(x) = E[max(f_best - f(x), 0)] * P(g(x) <= 0)
+    
+    Параметры:
+        constraint_functions: список функций ограничений g_i(x) <= 0
+        xi: параметр exploration (по умолчанию 0.01)
+    
+    Пример:
+        >>> constraints = [lambda x: x[0] + x[1] - 1]
+        >>> handler = ConstrainedExpectedImprovement(constraints, xi=0.01)
+    """
+    
+    def __init__(self, constraint_functions: List[Callable], xi: float = 0.01):
         """
-        super().__init__(bounds, n_init, kernel, random_state)
-
-        self.constraints = constraints
-        self.n_constraints = len(constraints)
-
-        # Инициализируем GP для каждого ограничения
-        self.constraint_gps: list[GaussianProcessRegressor] = []
-        self._init_constraint_gps(kernel, random_state)
-
-        self.constraint_values: Optional[np.ndarray] = None
-
-    def _init_constraint_gps(self, kernel: str, random_state: Optional[int]) -> None:
-        """Инициализация GP моделей для ограничений.
-
-        Аргументы:
-            kernel: Тип ядра
-            random_state: Seed для случайных чисел
+        Инициализация CEI acquisition функции.
+        
+        Параметры:
+            constraint_functions: список функций ограничений
+            xi: параметр exploration (trade-off)
         """
-        for _ in range(self.n_constraints):
-            if kernel == "rbf":
-                base_kernel = RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2))
-            else:
-                base_kernel = Matern(length_scale=1.0, nu=2.5, length_scale_bounds=(1e-2, 1e2))
-
-            kernel_full = base_kernel + WhiteKernel(noise_level=1e-5, noise_level_bounds=(1e-6, 1e-2))
-
-            gp = GaussianProcessRegressor(
-                kernel=kernel_full,
-                n_restarts_optimizer=10,
-                normalize_y=True,
-                random_state=random_state,
-            )
-            self.constraint_gps.append(gp)
-
-    def initialize(self, X_init: np.ndarray, y_init: np.ndarray) -> None:
-        """Инициализация с вычислением значений ограничений.
-
-        Аргументы:
-            X_init: Начальные точки (n_init, dim)
-            y_init: Значения функции (n_init,)
+        self.constraint_functions = constraint_functions
+        self.xi = xi
+    
+    def evaluate_constraints(self, X: np.ndarray) -> np.ndarray:
         """
-        super().initialize(X_init, y_init)
-
-        # Вычисляем значения ограничений для начальных точек
-        self.constraint_values = np.zeros((len(X_init), self.n_constraints))
-
-        for i, x in enumerate(X_init):
-            for j, constraint in enumerate(self.constraints):
-                self.constraint_values[i, j] = float(constraint(x))
-
-        # Обучаем GP для каждого ограничения
-        for j in range(self.n_constraints):
-            self.constraint_gps[j].fit(self.X, self.constraint_values[:, j])
-
-    def _constraint_feasibility_probability(self, X: np.ndarray) -> np.ndarray:
-        """Вычисление вероятности выполнения всех ограничений.
-
-        Для каждого ограничения g_j(x) ~ N(mu, sigma^2) вычисляем:
-        P(g_j(x) <= 0) = Φ(-mu / sigma)
-
-        Аргументы:
-            X: Точки для оценки (n_points, dim)
-
+        Вычисление суммарного нарушения ограничений.
+        
+        Параметры:
+            X: точки для оценки, форма (n_points, n_dims)
+            
         Возвращает:
-            Вероятность выполнения всех ограничений (n_points,)
+            violations: массив нарушений
         """
-        X = X.reshape(-1, self.dim)
+        X = np.atleast_2d(X)
+        violations = np.zeros(len(X))
+        for constraint in self.constraint_functions:
+            constraint_values = np.array([constraint(x) for x in X])
+            violations += np.maximum(0, constraint_values)
+        return violations
+    
+    def compute_penalized_objective(self, X: np.ndarray, f_values: np.ndarray) -> np.ndarray:
+        """
+        Для CEI штрафованная функция не используется.
+        Возвращаем исходные значения.
+        
+        Параметры:
+            X: точки
+            f_values: значения целевой функции
+            
+        Возвращает:
+            f_values: исходные значения
+        """
+        return f_values
+    
+    def get_acquisition_weights(self, X: np.ndarray) -> np.ndarray:
+        """
+        Вычисление вероятности допустимости точки.
+        
+        Использует сигмоидную функцию для аппроксимации:
+            P(feasible) = ∏ 1/(1 + exp(β * g_i(x)))
+        
+        Параметры:
+            X: точки для оценки
+            
+        Возвращает:
+            prob: вероятности допустимости в диапазоне [0, 1]
+        """
+        X = np.atleast_2d(X)
         prob = np.ones(len(X))
-
-        for j, gp in enumerate(self.constraint_gps):
-            mu, sigma = gp.predict(X, return_std=True)
-            sigma = np.maximum(sigma, 1e-6)
-            # P(g_j(x) <= 0)
-            prob_j = norm.cdf(-mu / sigma)
-            prob *= prob_j
-
+        beta = 5.0
+        
+        for constraint in self.constraint_functions:
+            g_vals = np.array([constraint(x) for x in X])
+            prob *= 1 / (1 + np.exp(beta * g_vals))
+        
         return prob
-
-    def _expected_improvement(self, X: np.ndarray) -> np.ndarray:
-        """Вычисление стандартного Expected Improvement.
-
-        EI(x) = (f_min - μ) * Φ((f_min - μ)/σ) + σ * φ((f_min - μ)/σ)
-
-        Аргументы:
-            X: Точки для оценки (n_points, dim)
-
+    
+    def is_feasible(self, X: np.ndarray, tolerance: float = 1e-6) -> np.ndarray:
+        """
+        Проверка допустимости точек.
+        
+        Параметры:
+            X: точки для проверки
+            tolerance: допуск на нарушение
+            
         Возвращает:
-            Значения EI (n_points,)
+            feasible: булев массив
         """
-        X = X.reshape(-1, self.dim)
-
-        # Получаем текущий минимум
-        if self.y is None:
-            return np.zeros(len(X))
-
-        f_min = np.min(self.y)
-
-        # Предсказания GP
-        mu, sigma = self.gp.predict(X, return_std=True)
-        sigma = np.maximum(sigma, 1e-6)
-
-        # Вычисляем EI
-        gamma = (f_min - mu) / sigma
-        ei = (f_min - mu) * norm.cdf(gamma) + sigma * norm.pdf(gamma)
-
-        return np.maximum(ei, 0)
-
-    def _acquisition_function(self, X: np.ndarray) -> np.ndarray:
-        """CEI функция приобретения.
-
-        CEI(x) = EI(x) * P(выполнения ограничений)
-
-        Аргументы:
-            X: Точки для оценки (n_points, dim)
-
-        Возвращает:
-            Значения CEI (n_points,)
-        """
-        ei = self._expected_improvement(X)
-        prob_feasible = self._constraint_feasibility_probability(X)
-
-        result = ei * prob_feasible
-        # Убеждаемся, что возвращается 1D массив
-        if result.ndim == 0:
-            result = np.array([result])
-        return result
-
-    def update(self, X_new: np.ndarray, y_new: float) -> None:
-        """Обновление модели новыми данными (включая ограничения).
-
-        Аргументы:
-            X_new: Новая точка (dim,)
-            y_new: Значение функции в новой точке
-        """
-        super().update(X_new, y_new)
-
-        # Вычисляем значения ограничений для новой точки
-        if self.constraint_values is not None:
-            new_constraint_values = np.zeros((1, self.n_constraints))
-
-            for j, constraint in enumerate(self.constraints):
-                new_constraint_values[0, j] = float(constraint(X_new))
-
-            self.constraint_values = np.vstack([self.constraint_values, new_constraint_values])
-
-            # Переобучаем GP для ограничений
-            for j in range(self.n_constraints):
-                self.constraint_gps[j].fit(self.X, self.constraint_values[:, j])
+        return self.evaluate_constraints(X) <= tolerance

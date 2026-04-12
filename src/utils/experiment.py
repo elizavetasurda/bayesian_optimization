@@ -1,201 +1,470 @@
-"""Module for running experiments."""
+"""
+Модуль для проведения экспериментов на BBOB-constrained задачах.
+
+Запускает сравнительное тестирование 4 методов оптимизации
+на BBOB-constrained тестовом наборе (54 задачи).
+
+Автор: Elizaveta Surda
+Дата: 2026
+"""
 
 import time
-from typing import Any
-
 import numpy as np
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 
-from src.bayesian_optimization import (
-    CEIBayesianOptimization,
-    PenaltyBayesianOptimization,
-    LagrangeBayesianOptimization,
-    BarrierBayesianOptimization,
-)
-from src.utils.types import OptimizationProblem, TrialResult
+from src.bayesian_optimization.base import BayesianOptimizer
+from src.bayesian_optimization.penalty import PenaltyMethod
+from src.bayesian_optimization.barrier import BarrierMethod
+from src.bayesian_optimization.lagrange import LagrangeMethod
+from src.bayesian_optimization.cei import ConstrainedExpectedImprovement
+from src.utils.types import OptimizationResult
 
-
-def is_feasible(x: np.ndarray, constraints: list, tolerance: float = 1e-6) -> bool:
-    """Check if point satisfies all constraints."""
-    return all(c(x) <= tolerance for c in constraints)
-
-
-def generate_feasible_point(problem: OptimizationProblem, max_attempts: int = 5000) -> np.ndarray | None:
-    """Generate a feasible point using Monte Carlo method."""
-    bounds_array = np.array(problem.bounds)
-    
-    for _ in range(max_attempts):
-        x = np.random.uniform(bounds_array[:, 0], bounds_array[:, 1])
-        if is_feasible(x, problem.constraints):
-            return x
-    return None
+# Пытаемся импортировать COCO
+try:
+    import cocoex
+    COCO_AVAILABLE = True
+except ImportError:
+    COCO_AVAILABLE = False
+    print("Предупреждение: coco-experiment не установлен.")
+    print("Для полного BBOB эксперимента выполните: pip install coco-experiment")
 
 
-def run_single_trial(
-    problem: OptimizationProblem,
-    method_name: str,
-    n_init: int,
-    n_iter: int,
-    random_state: int,
-    verbose: bool = True,
-) -> TrialResult:
-    """Run a single optimization trial."""
-    np.random.seed(random_state)
+# Соответствие между размерностью и индексом в COCO
+DIMENSION_TO_INDEX = {
+    2: 1,
+    3: 2,
+    5: 3,
+    10: 4,
+    20: 5,
+    40: 6,
+}
+
+INDEX_TO_DIMENSION = {
+    1: 2,
+    2: 3,
+    3: 5,
+    4: 10,
+    5: 20,
+    6: 40,
+}
+
+
+class BBOBBenchmark:
+    """
+    Обертка для BBOB-constrained задач из COCO.
+    """
     
-    # Generate feasible initial points
-    X_init = []
-    y_init = []
+    # Названия функций по ID
+    FUNCTION_NAMES = {
+        1: "Sphere_1c", 2: "Sphere_3c", 3: "Sphere_9c",
+        4: "Sphere_9+3n/4", 5: "Sphere_9+3n/2", 6: "Sphere_9+9n/2",
+        7: "Ellipsoid_1c", 8: "Ellipsoid_3c", 9: "Ellipsoid_9c",
+        10: "Ellipsoid_9+3n/4", 11: "Ellipsoid_9+3n/2", 12: "Ellipsoid_9+9n/2",
+        13: "LinearSlope_1c", 14: "LinearSlope_3c", 15: "LinearSlope_9c",
+        16: "LinearSlope_9+3n/4", 17: "LinearSlope_9+3n/2", 18: "LinearSlope_9+9n/2",
+        19: "RotEllipsoid_1c", 20: "RotEllipsoid_3c", 21: "RotEllipsoid_9c",
+        22: "RotEllipsoid_9+3n/4", 23: "RotEllipsoid_9+3n/2", 24: "RotEllipsoid_9+9n/2",
+        25: "Discus_1c", 26: "Discus_3c", 27: "Discus_9c",
+        28: "Discus_9+3n/4", 29: "Discus_9+3n/2", 30: "Discus_9+9n/2",
+        31: "BentCigar_1c", 32: "BentCigar_3c", 33: "BentCigar_9c",
+        34: "BentCigar_9+3n/4", 35: "BentCigar_9+3n/2", 36: "BentCigar_9+9n/2",
+        37: "DiffPowers_1c", 38: "DiffPowers_3c", 39: "DiffPowers_9c",
+        40: "DiffPowers_9+3n/4", 41: "DiffPowers_9+3n/2", 42: "DiffPowers_9+9n/2",
+        43: "Rastrigin_1c", 44: "Rastrigin_3c", 45: "Rastrigin_9c",
+        46: "Rastrigin_9+3n/4", 47: "Rastrigin_9+3n/2", 48: "Rastrigin_9+9n/2",
+        49: "RotRastrigin_1c", 50: "RotRastrigin_3c", 51: "RotRastrigin_9c",
+        52: "RotRastrigin_9+3n/4", 53: "RotRastrigin_9+3n/2", 54: "RotRastrigin_9+9n/2",
+    }
     
-    if verbose:
-        print(f"      Generating {n_init} feasible points...", end=" ")
+    def __init__(self, dimensions: List[int], function_ids: List[int], instances: List[int] = [1]):
+        """
+        Инициализация BBOB бенчмарка.
+        
+        Параметры:
+            dimensions: список размерностей (2,3,5,10,20,40)
+            function_ids: список ID функций (1-54)
+            instances: список инстансов
+        """
+        if not COCO_AVAILABLE:
+            raise RuntimeError("COCO library not available")
+        
+        self.dimensions = dimensions
+        self.function_ids = function_ids
+        self.instances = instances
+        
+        # Преобразуем размерности в индексы COCO
+        dim_indices = []
+        for d in dimensions:
+            if d in DIMENSION_TO_INDEX:
+                dim_indices.append(DIMENSION_TO_INDEX[d])
+            else:
+                print(f"Предупреждение: размерность {d} недоступна в BBOB. Доступны: 2,3,5,10,20,40")
+        
+        if not dim_indices:
+            raise ValueError("Нет подходящих размерностей")
+        
+        # Формируем правильный фильтр для COCO suite
+        dims_str = ",".join(str(i) for i in dim_indices)
+        funcs_str = ",".join(str(f) for f in function_ids)
+        inst_str = ",".join(str(i) for i in instances)
+        
+        suite_filter = f"dimension_indices:{dims_str} function_indices:{funcs_str} instance_indices:{inst_str}"
+        
+        print(f"Фильтр COCO: {suite_filter}")
+        
+        self.suite = cocoex.Suite("bbob-constrained", "", suite_filter)
+        self.problems = list(self.suite)
+        print(f"Загружено {len(self.problems)} задач")
     
-    max_total_attempts = 50000
+    def get_problems(self):
+        """Итератор по задачам."""
+        for problem in self.problems:
+            try:
+                # Получаем информацию о задаче
+                func_idx = problem.function_index
+                func_id = func_idx + 1
+                dim_idx = problem.dimension_index
+                dim = INDEX_TO_DIMENSION.get(dim_idx, 2)
+                
+                info = {
+                    'id': str(problem.id),
+                    'name': self.FUNCTION_NAMES.get(func_id, f"F{func_id}"),
+                    'function_id': func_id,
+                    'dimension': dim,
+                    'bounds': np.array([[-5, 5]] * dim),  # Стандартные границы BBOB
+                    'n_constraints': problem.number_of_constraints if hasattr(problem, 'number_of_constraints') else 0,
+                }
+                yield problem, info
+            except Exception as e:
+                print(f"Ошибка обработки задачи: {e}")
+                continue
+
+
+def run_bbob_experiment(
+    dimensions: List[int] = [2, 4, 8],
+    function_ids: List[int] = None,
+    n_runs: int = 2,
+    n_iterations: int = 30,
+    n_initial_points_factor: int = 5
+) -> Dict[str, Any]:
+    """
+    Запуск эксперимента на BBOB-constrained задачах.
+    """
+    if not COCO_AVAILABLE:
+        print("\nCOCO библиотека не установлена, используем стандартные задачи")
+        return run_standard_experiment(dimensions, n_runs, n_iterations, n_initial_points_factor)
     
-    while len(X_init) < n_init and len(X_init) * 1000 < max_total_attempts:
-        x = generate_feasible_point(problem, max_attempts=1000)
-        if x is not None:
-            y_val = problem.objective(x)
-            X_init.append(x)
-            y_init.append(y_val)
+    # Фильтруем только доступные размерности
+    available_dims = [d for d in dimensions if d in DIMENSION_TO_INDEX]
+    if not available_dims:
+        print(f"Предупреждение: размерности {dimensions} недоступны. Используем [2,3,5]")
+        available_dims = [2, 3, 5]
     
-    if len(X_init) == 0:
-        print(f"NO FEASIBLE POINTS FOUND!")
-        return TrialResult(
-            best_values=[np.inf] * (n_iter + 1),
-            time=0,
-            final_point=np.zeros(problem.dim),
-            feasibility=False,
-        )
+    # Если ID функций не указаны, берем первые 6 для быстрого теста
+    if function_ids is None:
+        function_ids = list(range(1, 7))  # Первые 6 функций (Sphere)
     
-    X_init = np.array(X_init)
-    y_init = np.array(y_init)
+    # Определяем методы
+    methods = {
+        'Penalty': lambda c: PenaltyMethod(c, penalty_coeff=100.0),
+        'Barrier': lambda c: BarrierMethod(c, barrier_coeff=1.0),
+        'Lagrange': lambda c: LagrangeMethod(c, penalty_coeff=10.0),
+        'CEI': lambda c: ConstrainedExpectedImprovement(c, xi=0.01),
+    }
     
-    if verbose:
-        print(f"found {len(X_init)} points")
+    all_results = []
     
-    # Initialize optimizer
-    if method_name == "CEI":
-        optimizer = CEIBayesianOptimization(
-            bounds=problem.bounds,
-            constraints=problem.constraints,
-            n_init=n_init,
-            kernel="matern",
-            random_state=random_state,
-        )
-    elif method_name == "Penalty":
-        optimizer = PenaltyBayesianOptimization(
-            bounds=problem.bounds,
-            constraints=problem.constraints,
-            n_init=n_init,
-            kernel="matern",
-            random_state=random_state,
-        )
-    elif method_name == "Lagrange":
-        optimizer = LagrangeBayesianOptimization(
-            bounds=problem.bounds,
-            constraints=problem.constraints,
-            n_init=n_init,
-            kernel="matern",
-            random_state=random_state,
-        )
-    elif method_name == "Barrier":
-        optimizer = BarrierBayesianOptimization(
-            bounds=problem.bounds,
-            constraints=problem.constraints,
-            n_init=n_init,
-            kernel="matern",
-            random_state=random_state,
-        )
+    print("\n" + "="*80)
+    print("BBOB-CONSTRAINED ЭКСПЕРИМЕНТ")
+    print("="*80)
+    print(f"Размерности: {available_dims}")
+    print(f"Функции: {len(function_ids)} (ID: {function_ids[:5]}...)")
+    print(f"Методы: {list(methods.keys())}")
+    print(f"Запусков на конфигурацию: {n_runs}")
+    print(f"Итераций: {n_iterations}")
+    print("="*80)
+    
+    try:
+        benchmark = BBOBBenchmark(available_dims, function_ids)
+    except Exception as e:
+        print(f"Ошибка загрузки BBOB: {e}")
+        return run_standard_experiment(dimensions, n_runs, n_iterations, n_initial_points_factor)
+    
+    problem_count = 0
+    for problem, info in benchmark.get_problems():
+        dim = info['dimension']
+        func_name = info['name']
+        problem_count += 1
+        
+        print(f"\n[{problem_count}] Задача: {func_name}, размерность={dim}")
+        
+        n_initial = n_initial_points_factor * dim
+        
+        # Создаем обертку для целевой функции
+        def make_objective(p):
+            def objective(x):
+                try:
+                    x = np.asarray(x).flatten()
+                    return p(x)
+                except Exception:
+                    return np.inf
+            return objective
+        
+        for method_name, method_creator in methods.items():
+            print(f"    Метод: {method_name}")
+            
+            for run_id in range(n_runs):
+                print(f"      Запуск {run_id + 1}/{n_runs}")
+                
+                seed = 42 + run_id + dim * 100
+                handler = method_creator([])
+                
+                try:
+                    start_time = time.time()
+                    
+                    optimizer = BayesianOptimizer(
+                        objective_function=make_objective(problem),
+                        bounds=info['bounds'],
+                        constraint_handler=handler,
+                        n_initial_points=n_initial,
+                        random_state=seed
+                    )
+                    
+                    best_value, best_point, history = optimizer.optimize(n_iterations, verbose=False)
+                    wall_time = time.time() - start_time
+                    
+                    # Проверка допустимости через constraint функцию
+                    is_feasible = True
+                    try:
+                        constraint_val = problem.constraint(best_point)
+                        if hasattr(constraint_val, '__len__'):
+                            is_feasible = np.all(np.array(constraint_val) <= 1e-6)
+                        else:
+                            is_feasible = constraint_val <= 1e-6
+                    except:
+                        is_feasible = True
+                    
+                    result = OptimizationResult(
+                        function_name=func_name,
+                        dimension=dim,
+                        method_name=method_name,
+                        best_value=best_value,
+                        best_point=best_point,
+                        best_feasible=is_feasible,
+                        n_iterations=n_iterations,
+                        n_initial_points=n_initial,
+                        history_values=history,
+                        wall_time=wall_time,
+                        converged=len(history) == n_iterations
+                    )
+                    
+                    all_results.append(result)
+                    
+                    feasible_str = "Да" if is_feasible else "Нет"
+                    print(f"        Лучшее значение: {best_value:.6f}, Допустимо: {feasible_str}")
+                    
+                except Exception as e:
+                    print(f"        Ошибка: {e}")
+                    continue
+    
+    # Сохраняем результаты
+    if all_results:
+        save_bbob_results(all_results, available_dims)
     else:
-        raise ValueError(f"Unknown method: {method_name}")
+        print("Нет успешных запусков, пробуем стандартные задачи")
+        return run_standard_experiment(dimensions, n_runs, n_iterations, n_initial_points_factor)
     
-    optimizer.initialize(X_init, y_init)
+    print("\n" + "="*80)
+    print(f"ЭКСПЕРИМЕНТ ЗАВЕРШЕН")
+    print(f"Всего успешных запусков: {len(all_results)}")
+    print("="*80)
     
-    best_value = np.min(y_init)
-    best_values_history = [best_value]
-    
-    start_time = time.time()
-    
-    for iteration in range(n_iter):
-        x_next = optimizer.suggest_next_point()
-        y_next = problem.objective(x_next)
-        optimizer.update(x_next, y_next)
-        
-        if is_feasible(x_next, problem.constraints) and y_next < best_value:
-            best_value = y_next
-        
-        best_values_history.append(best_value)
-        
-        if verbose and (iteration + 1) % 15 == 0:
-            distance = abs(best_value - problem.optimal_value)
-            print(f"      Iter {iteration + 1}/{n_iter}: best={best_value:.6f}, dist={distance:.6f}")
-    
-    elapsed_time = time.time() - start_time
-    
-    return TrialResult(
-        best_values=best_values_history,
-        time=elapsed_time,
-        final_point=X_init[np.argmin(y_init)],
-        feasibility=True,
-    )
+    return {'results': all_results, 'n_total': len(all_results)}
 
 
-def run_experiments(
-    problems: list[OptimizationProblem],
-    n_trials: int,
-    n_init: int,
-    n_iter: int,
-) -> dict[str, dict[str, dict[str, Any]]]:
-    """Run full experiment on all problems."""
-    methods = ["CEI", "Penalty", "Lagrange", "Barrier"]
-    all_results = {}
+def save_bbob_results(results: List[OptimizationResult], dimensions: List[int]) -> None:
+    """Сохранение результатов BBOB эксперимента."""
+    if not results:
+        return
     
-    for prob_idx, problem in enumerate(problems):
-        print(f"\n{'='*80}")
-        print(f"PROBLEM {prob_idx + 1}/{len(problems)}: {problem.name}")
-        print(f"{'='*80}")
-        print(f"   Dim: {problem.dim}, Optimum: {problem.optimal_value:.6f}")
-        print(f"   Constraints: {len(problem.constraints)}")
-        
-        problem_results = {}
-        
-        for method_idx, method in enumerate(methods):
-            print(f"\n   {method} ({method_idx + 1}/{len(methods)})")
-            
-            all_best_values = []
-            all_times = []
-            
-            for trial in range(n_trials):
-                print(f"      Trial {trial + 1}/{n_trials}")
-                random_state = 42 + prob_idx * 100 + trial * 10
-                
-                trial_result = run_single_trial(
-                    problem=problem,
-                    method_name=method,
-                    n_init=n_init,
-                    n_iter=n_iter,
-                    random_state=random_state,
-                    verbose=True,
-                )
-                
-                all_best_values.append(trial_result.best_values)
-                all_times.append(trial_result.time)
-                
-                final_val = trial_result.best_values[-1]
-                print(f"      Done in {trial_result.time:.1f}s, final={final_val:.6f}")
-            
-            best_values_matrix = np.array(all_best_values)
-            
-            problem_results[method] = {
-                "best_values": best_values_matrix,
-                "times": np.array(all_times),
-                "mean_best": np.mean(best_values_matrix, axis=0),
-                "std_best": np.std(best_values_matrix, axis=0),
-            }
-            
-            final_values = best_values_matrix[:, -1]
-            mean_dist = np.mean(np.abs(final_values - problem.optimal_value))
-            print(f"\n      {method}: mean distance = {mean_dist:.6f}\n")
-        
-        all_results[problem.name] = problem_results
+    Path("results/bbob").mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"results/bbob/bbob_experiment_{timestamp}.txt"
     
-    return all_results
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write("="*100 + "\n")
+        f.write("BBOB-CONSTRAINED ЭКСПЕРИМЕНТ\n")
+        f.write("="*100 + "\n\n")
+        
+        f.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Размерности: {dimensions}\n")
+        f.write(f"Всего запусков: {len(results)}\n\n")
+        
+        f.write("-"*100 + "\n")
+        f.write(f"{'Функция':<30} {'Разм':<6} {'Метод':<12} {'Лучшее значение':<18} {'Допустимо':<10} {'Время(с)':<10}\n")
+        f.write("-"*100 + "\n")
+        
+        for r in results:
+            feasible = "Да" if r.best_feasible else "Нет"
+            f.write(f"{r.function_name:<30} {r.dimension:<6} {r.method_name:<12} "
+                   f"{r.best_value:<18.6f} {feasible:<10} {r.wall_time:<10.2f}\n")
+        
+        # Статистика по методам
+        f.write("\n" + "="*100 + "\n")
+        f.write("СТАТИСТИКА ПО МЕТОДАМ\n")
+        f.write("-"*100 + "\n")
+        
+        methods = set(r.method_name for r in results)
+        for method in sorted(methods):
+            method_results = [r for r in results if r.method_name == method]
+            feasible_results = [r for r in method_results if r.best_feasible]
+            
+            f.write(f"\n{method}:\n")
+            f.write(f"  Запусков: {len(method_results)}\n")
+            f.write(f"  Допустимых: {len(feasible_results)}\n")
+            
+            if feasible_results:
+                values = [r.best_value for r in feasible_results]
+                f.write(f"  Среднее значение: {np.mean(values):.6f}\n")
+                f.write(f"  Медиана: {np.median(values):.6f}\n")
+                f.write(f"  Лучшее: {np.min(values):.6f}\n")
+    
+    print(f"\nРезультаты сохранены в {filename}")
+
+
+def run_standard_experiment(
+    dimensions: List[int] = [2, 4, 8],
+    n_runs: int = 3,
+    n_iterations: int = 30,
+    n_initial_points_factor: int = 5
+) -> Dict[str, Any]:
+    """Запуск на стандартных тестовых задачах."""
+    from src.test_problems.constrained_problems import get_test_problems
+    
+    test_problems = get_test_problems(dimensions)
+    
+    methods = {
+        'Penalty': lambda c: PenaltyMethod(c, penalty_coeff=100.0),
+        'Barrier': lambda c: BarrierMethod(c, barrier_coeff=1.0),
+        'Lagrange': lambda c: LagrangeMethod(c, penalty_coeff=10.0),
+        'CEI': lambda c: ConstrainedExpectedImprovement(c, xi=0.01),
+    }
+    
+    all_results = []
+    
+    print("\n" + "="*80)
+    print("ЭКСПЕРИМЕНТ НА СТАНДАРТНЫХ ЗАДАЧАХ")
+    print("="*80)
+    
+    for problem in test_problems:
+        problem_name = problem['name']
+        dim = problem['dimension']
+        problem_func = problem['function']
+        bounds = problem['bounds']
+        
+        print(f"\nЗадача: {problem_name}, размерность={dim}")
+        
+        n_initial = n_initial_points_factor * dim
+        
+        for method_name, method_creator in methods.items():
+            print(f"  Метод: {method_name}")
+            
+            for run_id in range(n_runs):
+                print(f"    Запуск {run_id + 1}/{n_runs}")
+                
+                seed = 42 + run_id + dim * 100
+                handler = method_creator([])
+                
+                try:
+                    start_time = time.time()
+                    
+                    optimizer = BayesianOptimizer(
+                        objective_function=problem_func,
+                        bounds=bounds,
+                        constraint_handler=handler,
+                        n_initial_points=n_initial,
+                        random_state=seed
+                    )
+                    
+                    best_value, best_point, history = optimizer.optimize(n_iterations, verbose=False)
+                    wall_time = time.time() - start_time
+                    is_feasible = handler.is_feasible(best_point.reshape(1, -1))[0]
+                    
+                    result = OptimizationResult(
+                        function_name=problem_name,
+                        dimension=dim,
+                        method_name=method_name,
+                        best_value=best_value,
+                        best_point=best_point,
+                        best_feasible=is_feasible,
+                        n_iterations=n_iterations,
+                        n_initial_points=n_initial,
+                        history_values=history,
+                        wall_time=wall_time,
+                        converged=len(history) == n_iterations
+                    )
+                    
+                    all_results.append(result)
+                    
+                    feasible_str = "Да" if is_feasible else "Нет"
+                    print(f"      Лучшее значение: {best_value:.6f}, Допустимо: {feasible_str}")
+                    
+                except Exception as e:
+                    print(f"      Ошибка: {e}")
+                    continue
+    
+    if all_results:
+        save_standard_results(all_results, dimensions)
+    
+    return {'results': all_results, 'n_total': len(all_results)}
+
+
+def save_standard_results(results: List[OptimizationResult], dimensions: List[int]) -> None:
+    """Сохранение результатов стандартного эксперимента."""
+    if not results:
+        return
+    
+    Path("results").mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"results/experiment_{timestamp}.txt"
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write("="*100 + "\n")
+        f.write("РЕЗУЛЬТАТЫ ЭКСПЕРИМЕНТА\n")
+        f.write("="*100 + "\n\n")
+        
+        f.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Размерности: {dimensions}\n")
+        f.write(f"Всего запусков: {len(results)}\n\n")
+        
+        f.write(f"{'Функция':<20} {'Разм':<6} {'Метод':<12} {'Лучшее значение':<18} {'Допустимо':<10} {'Время(с)':<10}\n")
+        f.write("-"*100 + "\n")
+        
+        for r in results:
+            feasible = "Да" if r.best_feasible else "Нет"
+            f.write(f"{r.function_name:<20} {r.dimension:<6} {r.method_name:<12} "
+                   f"{r.best_value:<18.6f} {feasible:<10} {r.wall_time:<10.2f}\n")
+    
+    print(f"\nРезультаты сохранены в {filename}")
+
+
+def run_comprehensive_experiment(
+    dimensions: List[int] = [2, 4, 8],
+    n_runs: int = 3,
+    n_iterations: int = 30,
+    n_initial_points_factor: int = 5
+) -> Dict[str, Any]:
+    """
+    Запуск эксперимента (автоматический выбор BBOB или стандартных задач).
+    """
+    # Для BBOB используем доступные размерности 2,3,5
+    bbob_dims = [2, 3, 5]
+    
+    if COCO_AVAILABLE:
+        print("\nИспользуем BBOB-constrained тестовый набор")
+        return run_bbob_experiment(bbob_dims, None, n_runs, n_iterations, n_initial_points_factor)
+    else:
+        print("\nBBOB не доступен, используем стандартные тестовые задачи")
+        return run_standard_experiment(dimensions, n_runs, n_iterations, n_initial_points_factor)

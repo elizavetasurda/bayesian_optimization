@@ -1,56 +1,10 @@
 Metadata-Version: 2.4
-Name: bayesian-optimization
+Name: bayesian_optimization
 Version: 1.0.0
-Summary: Bayesian optimization with constraints using CEI, Penalty, Lagrange, and Barrier methods
-Author-email: Elizaveta Surda <elizaveta.surda@gmail.com>
-License: MIT
-Keywords: bayesian-optimization,constraints,CEI,BO
-Classifier: Development Status :: 4 - Beta
-Classifier: Intended Audience :: Science/Research
-Classifier: License :: OSI Approved :: MIT License
-Classifier: Programming Language :: Python :: 3.12
-Classifier: Programming Language :: Python :: 3.13
-Classifier: Topic :: Scientific/Engineering :: Mathematics
-Requires-Python: >=3.12
-Description-Content-Type: text/markdown
-Requires-Dist: numpy>=1.26.0
-Requires-Dist: scipy>=1.11.0
-Requires-Dist: matplotlib>=3.8.0
-Requires-Dist: pandas>=2.1.0
-Requires-Dist: scikit-learn>=1.3.0
-Provides-Extra: dev
-Requires-Dist: pytest>=7.0; extra == "dev"
-Requires-Dist: pytest-cov>=4.0; extra == "dev"
-Requires-Dist: black>=23.0; extra == "dev"
-Requires-Dist: pylint>=3.0; extra == "dev"
-Requires-Dist: isort>=5.12; extra == "dev"
-Requires-Dist: mypy>=1.0; extra == "dev"
-
-# Bayesian Optimization with Constraints
-
-[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-Байесовская оптимизация с ограничениями, реализующая четыре метода обработки ограничений:
-
-- **CEI** (Constrained Expected Improvement) - ожидаемое улучшение с учётом вероятности выполнения ограничений
-- **Penalty** - метод штрафных функций с адаптивным коэффициентом
-- **Lagrange** - метод модифицированной функции Лагранжа с обновлением множителей
-- **Barrier** - метод внутренней точки с логарифмическим барьером
-
-##  Требования
-
-- Python 3.14 или выше
-- uv (рекомендуемый менеджер пакетов)
-
-##  Установка
-
-### Используя uv (рекомендуется)
-
-```bash
-git clone https://github.com/elizavetasurda/bayesian_optimization.git
-cd bayesian_optimization
-uv venv --python 3.14
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-uv pip install -e .
-uv lock
+Summary: Bayesian optimization with constraints for scientific research
+Requires-Python: >=3.9
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scipy>=1.10.0
+Requires-Dist: scikit-learn>=1.2.0
+Requires-Dist: matplotlib>=3.7.0
+Requires-Dist: seaborn>=0.12.0

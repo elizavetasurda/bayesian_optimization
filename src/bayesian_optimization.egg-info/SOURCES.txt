@@ -27,4 +27,7 @@ src/experimental_design/lhs.py
 src/test_problems/__init__.py
 src/test_problems/bbob_constrained.py
 src/test_problems/constrained_problems.py
+src/utils/__init__.py
+src/utils/experiment.py
 src/utils/result_saver.py
+src/utils/types.py
